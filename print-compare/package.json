@@ -1,0 +1,1 @@
+{"name":"print-compare","version":"1.0.0","private":true,"type":"module","scripts":{"build":"node scripts/build.mjs","dev":"node scripts/serve.mjs","test":"node --test tests/*.test.mjs"},"dependencies":{"pdfjs-dist":"6.4.299"}}
