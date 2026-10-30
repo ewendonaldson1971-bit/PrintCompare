@@ -4,3 +4,6 @@ node_modules/
 .openai/
 dist/vendor/
 test-results/
+.env
+.env.*
+!.env.example

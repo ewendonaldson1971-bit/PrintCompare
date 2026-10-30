@@ -1,11 +1,13 @@
 import * as pdfjs from './vendor/pdf.mjs';
+import { renderAiReport, reportLines } from './ai-report.js';
 pdfjs.GlobalWorkerOptions.workerSrc = './vendor/pdf.worker.mjs';
 const $ = id => document.getElementById(id);
-const state={pdf:null,pdfFile:null,proofs:[],results:[],active:0,mode:'side',busy:false,pdfLoading:false,proofLoading:0,pdfRevision:0,preset:'balanced',runPreset:'balanced'};
+const state={pdf:null,pdfFile:null,proofs:[],results:[],active:0,mode:'side',busy:false,pdfLoading:false,proofLoading:0,pdfRevision:0,preset:'balanced',runPreset:'balanced',aiConfigured:null,aiRunning:false,stopAi:false,aiController:null};
 const MAX_PDF=100*1024*1024,MAX_JPG=25*1024*1024;
 const text=(tag,content,className)=>{const el=document.createElement(tag);el.textContent=content;if(className)el.className=className;return el;};
 const message=(content,error=false)=>{const el=$('message');el.textContent=content;el.hidden=!content;el.className=error?'error':'';};
 const size=bytes=>bytes>=1024*1024?`${(bytes/1024/1024).toFixed(1)} MB`:`${Math.ceil(bytes/1024)} KB`;
+const aiSection=text('section','','ai-report');aiSection.id='ai-report';aiSection.setAttribute('aria-label','AI artwork report');$('findings').before(aiSection);
 function invalidate(){state.results=[];$('results').hidden=true;update();}
 function update(){
   const ready=!!state.pdf&&state.proofs.length>0&&!state.pdfLoading&&!state.proofLoading;
@@ -18,6 +20,63 @@ function update(){
   $('step2').classList.toggle('active',ready);$('step3').classList.toggle('active',state.results.length>0);
   $('pdf-input').disabled=state.busy;$('jpg-input').disabled=state.busy;
   $('new-comparison').disabled=state.busy||state.pdfLoading||state.proofLoading>0;
+  $('ai-enabled').disabled=state.busy;$('ai-refresh').disabled=state.busy;
+  $('stop-ai').hidden=!state.aiRunning;
+  $('download-report').disabled=state.busy;
+  $('results').classList.toggle('ai-running',state.aiRunning);
+}
+async function checkAiConfiguration(){
+  const status=$('ai-status');
+  try{const response=await fetch('/.netlify/functions/artwork-review',{cache:'no-store',signal:AbortSignal.timeout(10000)});if(!response.ok)throw new Error();const data=await response.json();if(typeof data.configured!=='boolean')throw new Error();state.aiConfigured=data.configured;status.textContent=data.configured?'AI reporting available':'AI setup needed: add the server API key';status.dataset.ready=String(data.configured);}
+  catch{state.aiConfigured=null;status.textContent='AI service is unavailable. Local checks still work.';status.dataset.ready='false';}
+  return state.aiConfigured===true;
+}
+$('ai-refresh').onclick=checkAiConfiguration;
+$('stop-ai').onclick=()=>{state.stopAi=true;state.aiController?.abort();$('stop-ai').disabled=true;};
+async function prepareAiImages(result){
+  const proof=state.proofs.find(p=>p.id===result.proofId);
+  if(!proof)throw new Error('The reference is no longer available. Compare the files again.');
+  const page=await state.pdf.getPage(result.page),base=page.getViewport({scale:1});
+  try{
+    // Render the PDF separately at higher resolution; do not upsample the low-resolution proof.
+    const viewport=page.getViewport({scale:2000/Math.max(base.width,base.height)});
+    const print=canvas(Math.max(1,Math.round(viewport.width)),Math.max(1,Math.round(viewport.height)));
+    await page.render({canvasContext:print.getContext('2d'),viewport,background:'white'}).promise;
+    const scale=Math.min(1,2000/Math.max(proof.width,proof.height));
+    const reference=canvas(Math.max(1,Math.round(proof.width*scale)),Math.max(1,Math.round(proof.height*scale)));
+    const img=new Image();img.src=proof.url;await img.decode();reference.getContext('2d').drawImage(img,0,0,reference.width,reference.height);
+    for(const quality of [.92,.82,.68,.5]){
+      const referenceImage=reference.toDataURL('image/jpeg',quality),printImage=print.toDataURL('image/jpeg',quality);
+      if(referenceImage.length+printImage.length<4_300_000)return {referenceImage,printImage};
+    }
+    throw new Error('This artwork creates an oversized AI preview. Try a smaller reference.');
+  }finally{page.cleanup();}
+}
+async function generateAiForResult(result){
+  result.aiPending=true;result.aiError=null;result.ai=null;renderCurrentAi();
+  const controller=new AbortController();state.aiController=controller;
+  try{
+    const images=await prepareAiImages(result);
+    if(state.stopAi)throw new DOMException('Review stopped.','AbortError');
+    const response=await fetch('/.netlify/functions/artwork-review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...images,referenceName:result.name,pdfName:state.pdfFile.name,page:result.page,referenceDimensions:`${result.proofWidth} × ${result.proofHeight} pixels`}),signal:AbortSignal.any([controller.signal,AbortSignal.timeout(65000)])});
+    let payload;try{payload=await response.json();}catch{throw new Error(response.status===429?'AI request limit reached. Please try again later.':'The AI service returned an unreadable response. Please try again.');}
+    if(!response.ok)throw new Error(payload.error||'AI review could not be completed. Please retry.');
+    if(!payload.report)throw new Error('The AI report was incomplete. Please retry.');
+    result.ai=payload;
+  }catch(error){result.aiError=error.name==='AbortError'?'AI review was stopped. No completed AI review was recorded.':error.name==='TimeoutError'?'AI review took too long. Please try this pair again.':error.message;}
+  finally{result.aiPending=false;state.aiController=null;renderResults();}
+}
+function renderCurrentAi(){
+  const result=state.results[state.active];if(!result)return;
+  renderAiReport(aiSection,result,{busy:state.busy,onGenerate:()=>runSingleAi(result)});
+}
+async function runSingleAi(result){
+  if(state.busy||result.error)return;
+  state.busy=true;state.aiRunning=true;state.stopAi=false;$('stop-ai').disabled=false;update();renderPairing();renderCurrentAi();
+  try{
+    if(!await checkAiConfiguration()){result.aiError=state.aiConfigured===false?'AI reporting needs the server API key. Add OPENAI_API_KEY in Netlify with Functions scope and redeploy, then click Generate AI report.':'The AI service is unavailable. Please try again later.';renderCurrentAi();return;}
+    message(`AI reviewing page ${result.page}: ${result.name}`);await generateAiForResult(result);
+  }finally{state.busy=false;state.aiRunning=false;update();renderPairing();renderCurrentAi();message('');}
 }
 function fileRow(name,detail,remove){const row=text('div','','file-row');row.append(text('span',name),text('small',detail));const button=text('button','×');button.type='button';button.setAttribute('aria-label',`Remove ${name}`);button.onclick=()=>{if(!state.busy)remove();};row.append(button);return row;}
 function renderFiles(){
@@ -119,22 +178,40 @@ $('compare').onclick=async()=>{
         const result=await analyse(print.getContext('2d',{willReadFrequently:true}).getImageData(0,0,width,height).data,ctx.getImageData(0,0,width,height).data,width,height,state.runPreset);
         const difference=canvas(width,height);difference.getContext('2d').putImageData(new ImageData(result.diff,width,height),0,0);
         delete result.diff;
-        results.push({...result,name:proof.file.name,page:proof.page,width,height,proofWidth:proof.width,proofHeight:proof.height,ratioMismatch,print,reference,difference});
+        results.push({...result,proofId:proof.id,name:proof.file.name,page:proof.page,width,height,proofWidth:proof.width,proofHeight:proof.height,ratioMismatch,print,reference,difference});
         page.cleanup();
       }catch(error){results.push({name:proof.file.name,page:proof.page,error:`Unable to compare this pair: ${error.message}`});}
     }
     state.results=results;state.active=0;renderResults();message('');$('results').hidden=false;$('results').scrollIntoView({behavior:'smooth',block:'start'});
-  }finally{state.busy=false;update();renderPairing();}
+    if($('ai-enabled').checked){
+      const available=await checkAiConfiguration();
+      if(available){
+        state.aiRunning=true;state.stopAi=false;$('stop-ai').disabled=false;update();
+        const pairs=results.filter(r=>!r.error);
+        for(let i=0;i<pairs.length;i++){
+          if(state.stopAi)break;
+          message(`AI artwork review ${i+1} of ${pairs.length}: ${pairs[i].name}`);
+          await generateAiForResult(pairs[i]);
+          // Stop a batch after service/configuration failures instead of repeating failing calls.
+          if(pairs[i].aiError){message('An AI review could not be completed. Local results are available; retry the affected pair from its report.',true);break;}
+        }
+        if(state.stopAi)message('AI reviews stopped. Completed reports and all local comparisons are still available.');
+        else if(pairs.every(r=>r.ai))message('AI artwork reports are ready. Review the findings and download the combined report.');
+      }else{
+        for(const result of results)result.aiError=state.aiConfigured===false?'AI reporting needs the server API key. Local comparison is complete. Add OPENAI_API_KEY in Netlify with Functions scope and redeploy, then generate a report here.':'AI reporting is unavailable right now. Local comparison is complete; try generating an AI report later.';
+      }
+    }
+  }finally{state.busy=false;state.aiRunning=false;update();renderPairing();if(state.results.length)renderResults();}
 };
 function renderResults(){
-  const valid=state.results.filter(r=>!r.error),review=state.results.filter(r=>r.error||r.ratioMismatch||r.regions.length||r.percent>.1).length;
+  const valid=state.results.filter(r=>!r.error),review=state.results.filter(r=>r.error||r.ratioMismatch||r.regions.length||r.percent>.1||(r.ai&&r.ai.report.verdict!=='no_significant_difference')).length;
   const summary=$('result-summary');summary.replaceChildren();
   for(const [number,label]of[[valid.length,'Proofs compared'],[review,'Pairs to review'],[valid.reduce((sum,r)=>sum+r.regions.length,0),'Difference regions']]){
     const card=text('div','','summary-card');card.append(text('strong',number),text('span',label));summary.append(card);
   }
   const tabs=$('result-tabs');tabs.replaceChildren();
   state.results.forEach((r,i)=>{const b=text('button',`Page ${r.page} · ${r.name}`);b.title=r.name;b.classList.toggle('selected',i===state.active);b.onclick=()=>{state.active=i;renderResults();};tabs.append(b);});
-  renderViewer();renderFindings();
+  renderViewer();renderCurrentAi();renderFindings();
 }
 function figure(caption,source){const f=document.createElement('figure');f.append(text('figcaption',caption));const c=canvas(source.width,source.height);c.getContext('2d').drawImage(source,0,0);f.append(c);return f;}
 function renderViewer(){
@@ -155,6 +232,7 @@ function renderViewer(){
 }
 function renderFindings(){
   const r=state.results[state.active],findings=$('findings');findings.replaceChildren();
+  findings.append(text('h3','Local pixel check','pixel-heading'));
   function add(title,detail,warning){const el=text('div','',`finding ${warning?'warning':'pass'}`);el.append(text('strong',title),text('small',detail));findings.append(el);}
   if(r.error){add('Comparison incomplete',r.error,true);return;}
   const changed=r.regions.length>0||r.percent>.1;
@@ -169,9 +247,9 @@ for(const b of document.querySelectorAll('[data-mode]'))b.onclick=()=>{state.mod
 $('opacity').oninput=()=>{$('opacity-value').textContent=`${$('opacity').value}%`;renderViewer();};
 function download(blob,name){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 $('download-report').onclick=()=>{
-  const lines=['PRINT COMPARE — VISUAL COMPARISON REPORT',`Created: ${new Date().toLocaleString()}`,`Print PDF: ${state.pdfFile.name}`,`Sensitivity: ${state.runPreset}`,'','Visual screening at reference resolution. This report is not a prepress or colour-accuracy certification.',''];
+  const lines=['PRINT COMPARE — ARTWORK & PIXEL COMPARISON REPORT',`Created: ${new Date().toLocaleString()}`,`Print PDF: ${state.pdfFile.name}`,`Pixel sensitivity: ${state.runPreset}`,'','AI observations can be mistaken. Verify reported changes against the artwork. This report is not a prepress or colour-accuracy certification.',''];
   for(const r of state.results){lines.push(`REFERENCE: ${r.name}`,`PDF page: ${r.page}`);if(r.error){lines.push(r.error,'');continue;}
-    lines.push(`Comparison resolution: ${r.width} x ${r.height}`,`Reference resolution: ${r.proofWidth} x ${r.proofHeight}`,`Flagged pixels: ${r.changed} of ${r.compared} (${r.percent.toFixed(4)}%)`,`Regions: ${r.regions.length}`,`Aspect ratio mismatch: ${r.ratioMismatch?'YES — review pairing/crop':'No'}`,`Alignment translation: x=${-r.shiftX}px, y=${-r.shiftY}px`, 'Region coordinates below use the comparison resolution, with origin at top left.');
+    lines.push(...reportLines(r),'LOCAL PIXEL CHECK',`Comparison resolution: ${r.width} x ${r.height}`,`Reference resolution: ${r.proofWidth} x ${r.proofHeight}`,`Flagged pixels: ${r.changed} of ${r.compared} (${r.percent.toFixed(4)}%)`,`Regions: ${r.regions.length}`,`Aspect ratio mismatch: ${r.ratioMismatch?'YES — review pairing/crop':'No'}`,`Alignment translation: x=${-r.shiftX}px, y=${-r.shiftY}px`, 'Region coordinates below use the comparison resolution, with origin at top left.');
     r.regions.forEach((region,i)=>lines.push(`  ${i+1}. x=${region.x}, y=${region.y}, width=${region.width}, height=${region.height}, flagged pixels=${region.pixels}`));lines.push('');
   }
   lines.push('LIMITATIONS','JPEG compression, RGB conversion, anti-aliasing, alignment, bleed, and crop marks may produce differences. Changes below reference resolution may be missed. Spot colours, overprint, separations, font embedding, and print colour accuracy are not checked.');
@@ -184,4 +262,4 @@ $('new-comparison').onclick=()=>{
 };
 $('how-nav').onclick=()=>$('how-dialog').showModal();for(const button of document.querySelectorAll('.dialog-close'))button.onclick=()=>$('how-dialog').close();
 $('how-dialog').addEventListener('click',e=>{if(e.target===$('how-dialog')){const r=e.target.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)e.target.close();}});
-$('workspace-nav').onclick=()=>window.scrollTo({top:0,behavior:'smooth'});update();
+$('workspace-nav').onclick=()=>window.scrollTo({top:0,behavior:'smooth'});update();checkAiConfiguration();
