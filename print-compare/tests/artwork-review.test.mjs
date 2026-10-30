@@ -62,6 +62,12 @@ test('download includes labelled artwork observations and reports unavailable re
   assert.match(lines,/JPEG reference: Absent/);assert.match(lines,/Print PDF: Black horizontal bar/);assert.match(lines,/CHECK BEFORE PRINTING/);
   assert.match(reportLines({aiError:'Not configured'}).join('\n'),/Not configured/);
 });
+test('a passing report may document acceptable size or colour differences without being rejected',async()=>{
+  const accepted={...report,verdict:'no_significant_difference',assessment:{logos:'intact',colour:'acceptable',size:'acceptable',content:'intact'},decision_reason:'Only a slight uniform size change is visible.',differences:[{area:'Artwork scale',reference:'Slightly larger',print:'Slightly smaller, all content intact',severity:'low',confidence:'high'}]};
+  assert.equal(validReport(accepted),true);
+  const response=await handleReview(request(),{env,fetchImpl:async()=>ok(accepted)});
+  assert.equal(response.status,200);assert.equal((await response.json()).report.status,'pass');
+});
 test('published browser assets contain no server key references and describe AI sharing',async()=>{
   const html=await readFile('dist/index.html','utf8');assert.match(html,/through Netlify to OpenAI/);assert.doesNotMatch(html,/Your artwork never leaves this device/);
   const app=await readFile('dist/app.js','utf8');assert.doesNotMatch(app,/Bearer /);assert.match(app,/\.netlify\/functions\/artwork-review/);

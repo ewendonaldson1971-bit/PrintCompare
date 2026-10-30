@@ -253,7 +253,7 @@ function download(blob,name){const url=URL.createObjectURL(blob),a=document.crea
 $('download-report').onclick=()=>{
   const lines=['PRINT COMPARE — ARTWORK & PIXEL COMPARISON REPORT',`Created: ${new Date().toLocaleString()}`,`Print PDF: ${state.pdfFile.name}`,`Pixel sensitivity: ${state.runPreset}`,'','AI observations can be mistaken. Verify reported changes against the artwork. This report is not a prepress or colour-accuracy certification.',''];
   lines.push(`OVERALL STATUS: ${STATUS_LABELS[overallStatus(state.results)]}`,ACCEPTANCE_RULES,'');
-  for(const r of state.results){lines.push(`REFERENCE: ${r.name}`,`PDF page: ${r.page}`);if(r.error){lines.push(r.error,'');continue;}
+  for(const r of state.results){lines.push(`REFERENCE: ${r.name}`,`PDF page: ${r.page}`);if(r.error){lines.push('STATUS: NOT ASSESSED',r.error,'');continue;}
     lines.push(...reportLines(r),'LOCAL PIXEL CHECK',`Comparison resolution: ${r.width} x ${r.height}`,`Reference resolution: ${r.proofWidth} x ${r.proofHeight}`,`Flagged pixels: ${r.changed} of ${r.compared} (${r.percent.toFixed(4)}%)`,`Regions: ${r.regions.length}`,`Aspect ratio mismatch: ${r.ratioMismatch?'YES — review pairing/crop':'No'}`,`Alignment translation: x=${-r.shiftX}px, y=${-r.shiftY}px`, 'Region coordinates below use the comparison resolution, with origin at top left.');
     r.regions.forEach((region,i)=>lines.push(`  ${i+1}. x=${region.x}, y=${region.y}, width=${region.width}, height=${region.height}, flagged pixels=${region.pixels}`));lines.push('');
   }

@@ -72,7 +72,7 @@ export function validReport(report) {
     && report.differences.every(d => d && ['area','reference','print'].every(k => sane(d[k]))
       && ['high','medium','low'].includes(d.severity) && ['high','medium','low'].includes(d.confidence))
     && list(report.shared_elements) && list(report.checks) && list(report.limitations)
-    && !(report.verdict === 'no_significant_difference' && report.differences.length);
+    && !(report.verdict === 'no_significant_difference' && reportStatus(report) === 'fail');
 }
 async function limitedBody(request) {
   if (Number(request.headers.get('content-length')) > MAX_BODY_BYTES) throw new RangeError();
