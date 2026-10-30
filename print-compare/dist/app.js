@@ -9,6 +9,7 @@ const message=(content,error=false)=>{const el=$('message');el.textContent=conte
 const size=bytes=>bytes>=1024*1024?`${(bytes/1024/1024).toFixed(1)} MB`:`${Math.ceil(bytes/1024)} KB`;
 const aiSection=text('section','','ai-report');aiSection.id='ai-report';aiSection.setAttribute('aria-label','AI artwork report');$('findings').before(aiSection);
 function invalidate(){state.results=[];$('results').hidden=true;update();}
+async function releasePdf(pdf){if(pdf)try{await pdf.loadingTask.destroy();}catch{/* A disposed loading task needs no further cleanup. */}}
 function update(){
   const ready=!!state.pdf&&state.proofs.length>0&&!state.pdfLoading&&!state.proofLoading;
   $('compare').disabled=!ready||state.busy;
@@ -81,7 +82,7 @@ async function runSingleAi(result){
 function fileRow(name,detail,remove){const row=text('div','','file-row');row.append(text('span',name),text('small',detail));const button=text('button','×');button.type='button';button.setAttribute('aria-label',`Remove ${name}`);button.onclick=()=>{if(!state.busy)remove();};row.append(button);return row;}
 function renderFiles(){
   $('pdf-list').replaceChildren();$('jpg-list').replaceChildren();
-  if(state.pdfFile)$('pdf-list').append(fileRow(state.pdfFile.name,`${state.pdf.numPages} pages · ${size(state.pdfFile.size)}`,()=>{state.pdfRevision++;state.pdf?.destroy();state.pdf=null;state.pdfFile=null;renderFiles();renderPairing();invalidate();}));
+  if(state.pdfFile)$('pdf-list').append(fileRow(state.pdfFile.name,`${state.pdf.numPages} pages · ${size(state.pdfFile.size)}`,()=>{state.pdfRevision++;releasePdf(state.pdf);state.pdf=null;state.pdfFile=null;renderFiles();renderPairing();invalidate();}));
   for(const proof of state.proofs)$('jpg-list').append(fileRow(proof.file.name,size(proof.file.size),()=>{URL.revokeObjectURL(proof.url);state.proofs=state.proofs.filter(p=>p.id!==proof.id);renderFiles();renderPairing();invalidate();}));
   $('pdf-drop-title').textContent=state.pdf?'Drop a PDF to replace it':'Drop your print PDF here';
   $('jpg-drop-title').textContent=state.proofs.length?'Drop more JPEG proofs here':'Drop your JPEG proofs here';
@@ -97,8 +98,8 @@ async function loadPdf(files){
     task=pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer()),cMapUrl:'./vendor/cmaps/',cMapPacked:true,standardFontDataUrl:'./vendor/standard_fonts/',wasmUrl:'./vendor/wasm/',isEvalSupported:false});
     task.onPassword=()=>{task.destroy();};
     const pdf=await task.promise;
-    if(revision!==state.pdfRevision){await pdf.destroy();return;}
-    state.pdf?.destroy();state.pdf=pdf;state.pdfFile=file;
+    if(revision!==state.pdfRevision){await releasePdf(pdf);return;}
+    releasePdf(state.pdf);state.pdf=pdf;state.pdfFile=file;
     for(let i=0;i<state.proofs.length;i++)state.proofs[i].page=Math.min(i+1,pdf.numPages);
     renderFiles();renderPairing();invalidate();message('');
   }catch(error){if(revision===state.pdfRevision)message('Could not open this PDF. Check that it is valid and not password protected.',true);}
@@ -257,7 +258,7 @@ $('download-report').onclick=()=>{
 };
 $('new-comparison').onclick=()=>{
   if(state.busy||state.pdfLoading||state.proofLoading)return;
-  state.pdfRevision++;state.pdf?.destroy();state.pdf=null;state.pdfFile=null;for(const proof of state.proofs)URL.revokeObjectURL(proof.url);state.proofs=[];state.results=[];state.active=0;state.mode='side';state.preset='balanced';$('opacity').value=50;$('opacity-value').textContent='50%';
+  state.pdfRevision++;releasePdf(state.pdf);state.pdf=null;state.pdfFile=null;for(const proof of state.proofs)URL.revokeObjectURL(proof.url);state.proofs=[];state.results=[];state.active=0;state.mode='side';state.preset='balanced';$('opacity').value=50;$('opacity-value').textContent='50%';
   renderFiles();renderPairing();invalidate();message('');window.scrollTo({top:0,behavior:'smooth'});
 };
 $('how-nav').onclick=()=>$('how-dialog').showModal();for(const button of document.querySelectorAll('.dialog-close'))button.onclick=()=>$('how-dialog').close();

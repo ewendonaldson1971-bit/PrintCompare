@@ -1,10 +1,10 @@
 [build]
-  base = "print-compare"
-  command = "npm run build"
-  publish = "dist"
+  base = "."
+  command = "npm --prefix print-compare ci --no-audit --no-fund && npm --prefix print-compare run build"
+  publish = "print-compare/dist"
 
 [functions]
-  directory = "netlify/functions"
+  directory = "print-compare/netlify/functions"
   node_bundler = "esbuild"
 
 [[headers]]

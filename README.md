@@ -27,7 +27,7 @@ This is visual screening, not a colour-accurate proof or a prepress certificatio
 
 ## Netlify
 
-The root `netlify.toml` sets base directory `print-compare`, build command `npm run build`, publish directory `dist`, and functions directory `netlify/functions` relative to that base. PDF.js, its worker, fonts, CMaps, and WASM files are bundled from a pinned dependency during the build.
+The root `netlify.toml` builds from the repository root, installs the locked dependencies in `print-compare`, and runs its build script. Its publish directory is `print-compare/dist`; its functions directory is `print-compare/netlify/functions`. These explicit paths avoid base-directory ambiguity in CLI deployments. The nested config also supports running the app as a standalone checkout. PDF.js, its worker, fonts, CMaps, and WASM files are bundled from a pinned dependency during the build.
 
 Set `OPENAI_API_KEY` in Netlify with Functions scope and Production context, then redeploy. Optionally set `OPENAI_VISION_MODEL` (default `gpt-4.1`; must support image inputs, Responses, and strict Structured Outputs). API usage is billed to the OpenAI project. The key never enters browser assets or Git. The endpoint reports configuration status without exposing the key; API errors are sanitised. Netlify applies a 60-request/hour/IP limit. Requests time out after 50 seconds; failed/refused/incomplete reviews remain visibly incomplete rather than passing a file.
 
