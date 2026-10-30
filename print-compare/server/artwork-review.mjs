@@ -78,7 +78,10 @@ export async function handleReview(request, { env = process.env, fetchImpl = fet
   if (!input || !isJpeg(input.referenceImage) || !isJpeg(input.printImage) || !Number.isInteger(input.page) || input.page < 1 || input.page > 100000) return fail('Provide a valid JPEG reference, rendered PDF page, and page number.', 'invalid_request', 400);
   const model = env.OPENAI_VISION_MODEL?.trim() || 'gpt-4.1';
   try {
-    const response = await fetchImpl('https://api.openai.com/v1/responses', {
+    // Netlify AI Gateway injects both variables. Its token is not an OpenAI-direct key.
+    const baseURL = (env.OPENAI_BASE_URL?.trim() || 'https://api.openai.com/v1').replace(/\/+$/, '');
+    if (new URL(baseURL).protocol !== 'https:') return fail('The AI service URL must use HTTPS. Check the server configuration.', 'configuration_required', 503);
+    const response = await fetchImpl(`${baseURL}/responses`, {
       method: 'POST', signal: AbortSignal.timeout(50_000),
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, store: false, max_output_tokens: 3200,
@@ -94,8 +97,8 @@ export async function handleReview(request, { env = process.env, fetchImpl = fet
     });
     if (!response.ok) {
       let code; try { code = (await response.json()).error?.code; } catch { /* No upstream detail is exposed. */ }
-      if (code === 'insufficient_quota') return fail('The OpenAI project has no available API credit. Check its billing and usage limits.', 'quota_exceeded', 503);
-      if (response.status === 401 || response.status === 403) return fail('The server API key cannot access the vision service. Check the OpenAI key and project permissions in Netlify.', 'invalid_key', 503);
+      if (code === 'insufficient_quota') return fail('AI usage quota is exhausted. Check the configured API billing or Netlify AI usage limits.', 'quota_exceeded', 503);
+      if (response.status === 401 || response.status === 403) return fail('The server AI credentials cannot access the vision service. Check the key, base URL, and service permissions in Netlify.', 'invalid_key', 503);
       if (response.status === 429) return fail('AI review is busy or its request limit has been reached. Please try again shortly.', 'rate_limited', 429);
       if (code === 'model_not_found') return fail('The configured vision model is unavailable to this API project. Check OPENAI_VISION_MODEL in Netlify.', 'model_unavailable', 503);
       return fail('The AI service could not complete this review. Please try again.', 'upstream_error', 502);

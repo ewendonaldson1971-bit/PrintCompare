@@ -46,6 +46,12 @@ test('quota and upstream credentials failures expose helpful messages without up
     const result=await response.json();assert.equal(result.code,expected);assert.ok(!JSON.stringify(result).includes('secret vendor message'));
   }
 });
+test('Netlify gateway credentials are sent to their matching server-configured base URL',async()=>{
+  const response=await handleReview(request(),{env:{...env,OPENAI_BASE_URL:'https://gateway.example/openai/v1/'},fetchImpl:async(url)=>{assert.equal(url,'https://gateway.example/openai/v1/responses');return ok(report);}});
+  assert.equal(response.status,200);
+  const invalid=await handleReview(request(),{env:{...env,OPENAI_BASE_URL:'http://gateway.example/v1'},fetchImpl:()=>assert.fail('must not transmit credentials over HTTP')});
+  assert.equal(invalid.status,503);
+});
 test('refused, truncated and malformed reports are not reported as completed reviews',async()=>{
   const payloads=[{status:'incomplete',output:[]},{status:'completed',output:[{content:[{type:'refusal'}]}]},{status:'completed',output:[{content:[{type:'output_text',text:'{"summary":"bogus"}'}]}]}];
   for(const payload of payloads){const response=await handleReview(request(),{env,fetchImpl:async()=>new Response(JSON.stringify(payload))});assert.ok(response.status>=400);assert.equal((await response.json()).report,undefined);}
