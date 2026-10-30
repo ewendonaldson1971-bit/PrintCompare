@@ -31,6 +31,12 @@ The root `netlify.toml` builds from the repository root, installs the locked dep
 
 When Netlify AI Gateway is enabled, it automatically injects `OPENAI_API_KEY` and `OPENAI_BASE_URL` at function runtime. The app honours both so a gateway credential is never sent to OpenAI directly. This route bills AI usage through Netlify. Alternatively, set your own `OPENAI_API_KEY` in Netlify with Functions scope and Production context, then redeploy; without `OPENAI_BASE_URL`, calls go directly to OpenAI and use its billing. Optionally set `OPENAI_VISION_MODEL` (default `gpt-4.1`; must support image inputs, Responses, and strict Structured Outputs). The key never enters browser assets or Git. The endpoint reports configuration status without exposing the key; API errors are sanitised. Netlify applies a 60-request/hour/IP limit. Requests time out after 50 seconds; failed/refused/incomplete reviews remain visibly incomplete rather than passing a file.
 
+## Pass/Fail rules
+
+Each AI report assesses logo integrity, colour, size/layout, and content. The app derives the decision from these structured findings: slight intact rescaling and modest colour shifts consistent with RGB-to-CMYK conversion pass. Missing/damaged logos, significant colour changes (such as a coloured logo turning grey or losing its fill), material content changes, or material distortion/cropping fail. Pixel counts and page proportions alone do not fail a proof. These are qualitative visual rules; no numeric size tolerance or colourimetric threshold is implied, and RGB renders cannot verify the source colour space or conversion accuracy.
+
+Every pair shows PASS or FAIL once assessed, with a reason. A missing, failed, stopped, or inconclusive AI review shows NOT ASSESSED rather than an unearned pass. One failed pair fails the overall job; an overall pass requires every pair to pass. Decisions and acceptance criteria are included in the downloaded report.
+
 ## Privacy
 
 Pixel-only checks do not transmit artwork. With AI reports enabled, JPEG previews of each reference and rendered PDF page pass through the Netlify function to OpenAI. The full PDF is not uploaded. The app does not persist artwork or reports on its server or log image payloads. OpenAI requests use `store: false`; this does not promise zero retention, and OpenAI API data policies still apply. Reports live in browser memory until reset/reload unless downloaded. Google Fonts serves font styles only.

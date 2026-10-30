@@ -1,3 +1,4 @@
+import { reportStatus } from '../dist/assessment.js';
 export const MAX_BODY_BYTES = 4_500_000;
 const string = { type: 'string' };
 const strings = { type: 'array', items: string, maxItems: 12 };
@@ -6,6 +7,17 @@ export const reportSchema = {
   properties: {
     verdict: { type: 'string', enum: ['differences_found', 'no_significant_difference', 'inconclusive'] },
     summary: string,
+    decision_reason: string,
+    assessment: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        logos: { type: 'string', enum: ['intact','missing_or_damaged','uncertain'] },
+        colour: { type: 'string', enum: ['acceptable','significant_change','uncertain'] },
+        size: { type: 'string', enum: ['acceptable','significant_change','uncertain'] },
+        content: { type: 'string', enum: ['intact','significant_change','uncertain'] },
+      },
+      required: ['logos','colour','size','content'],
+    },
     differences: { type: 'array', maxItems: 12, items: {
       type: 'object', additionalProperties: false,
       properties: { area: string, reference: string, print: string,
@@ -15,7 +27,7 @@ export const reportSchema = {
     } },
     shared_elements: strings, checks: strings, limitations: strings,
   },
-  required: ['verdict', 'summary', 'differences', 'shared_elements', 'checks', 'limitations'],
+  required: ['verdict', 'summary', 'decision_reason', 'assessment', 'differences', 'shared_elements', 'checks', 'limitations'],
 };
 
 export const instructions = `You are a meticulous visual artwork proofreader comparing an approved low-resolution JPEG reference with a rendered page from a print-ready PDF.
@@ -25,7 +37,13 @@ Compare visible CONTENT, not just pixel noise: logos and numbers; wording and le
 Account for different page bounds, bleed/crop marks, downsampling and JPEG compression. Compare corresponding artwork at its relative scale before judging. Do not mistake fit-to-page margins or minor registration shifts for missing content.
 Name each distinct visible area concretely (for example, a number logo or top banner) when you can actually identify it. Quote only legible text; do not guess illegible words or infer original CMYK/spot colours from an RGB preview.
 Give a concise, direct summary with the most material change first. For each actual discrepancy, describe the reference appearance and print appearance in separate fields. Order discrepancies by print impact, highest first. Distinguish clear local content changes from overall colour/contrast changes that may reflect rendering or colour management. Use confidence low when uncertain; do not invent differences to fill the table.
-For clearly matching artwork, return no_significant_difference and an empty differences array. If resolution or unrelated/mispaired pages prevents a reliable judgement, return inconclusive, explain why, and request a clearer reference or correct pairing. Never assert a match when you cannot inspect the artwork.
+Apply these acceptance rules for a PASS/FAIL artwork check:
+PASS slight changes in overall artwork size or uniform scaling when the same content is intact. Ignore different PDF page size, added bleed, crop marks and fit-to-page margins. Do not fail an intact logo merely because its overall scale is slightly different.
+PASS minor overall colour/contrast/saturation shifts consistent with RGB-to-CMYK conversion or RGB preview rendering. Colour conversion is expected and must not itself cause a failure. Both images are screen renders: you cannot prove which source colour space or conversion caused a shift. Describe such shifts as consistent with conversion, never as a verified RGB/CMYK measurement.
+FAIL a logo that drops out, becomes missing, blank, materially incomplete, or loses an essential component (even if the affected area is small). FAIL significant colour changes: a clearly different hue, a coloured logo turning grey/silver/white/black, disappearance of a coloured fill, or strong local recolouring beyond a modest conversion shift. Do not dismiss these changes as RGB-to-CMYK conversion. FAIL other material missing/added/altered artwork or lettering, and material distortion, cropping, or size/layout changes beyond a slight intact resize.
+Set assessment.logos to intact when all identifiable reference logos are intact, or when neither image contains logos; missing_or_damaged for a confirmed dropout or material damage; uncertain if important logo details cannot be judged. Set assessment.colour and assessment.size to acceptable for the allowed changes above; significant_change only for a clear failing change; uncertain when reliable assessment is impossible. Set assessment.content to intact for equivalent content (including acceptable bleed/page-bound changes), significant_change for material added/missing/altered content, otherwise uncertain.
+The application derives FAIL if any assessment field identifies a failing change, PASS only if all four fields are acceptable/intact, and NOT ASSESSED if uncertainty remains without a confirmed failure. Provide decision_reason as a concise explanation of the decision under these exact rules. Do not fail acceptable changes simply because pixels differ, and do not give an automatic pass to an unreadable or wrong-paired proof.
+For clearly matching artwork, return no_significant_difference and an empty differences array. Acceptable size/colour differences may be described in differences with low severity while still passing the assessment. If resolution or unrelated/mispaired pages prevents a reliable judgement, return inconclusive, explain why, and request a clearer reference or correct pairing. Never assert a match when you cannot inspect the artwork.
 List important elements present in both and specific checks needed before printing. Limit each list and the differences table to 12 items. Keep the whole report concise. State relevant resolution/crop/colour uncertainties in limitations and always note this is screen-based visual screening, not a colour-accurate print proof or prepress certification. Do not label a file approved or safe to print.`;
 
 function json(data, status = 200, extra = {}) {
@@ -45,6 +63,11 @@ export function validReport(report) {
   const list = a => Array.isArray(a) && a.length <= 12 && a.every(sane);
   return !!report && ['differences_found','no_significant_difference','inconclusive'].includes(report.verdict)
     && sane(report.summary) && report.summary.trim().length > 0
+    && sane(report.decision_reason) && report.decision_reason.trim().length > 0
+    && !!report.assessment && ['intact','missing_or_damaged','uncertain'].includes(report.assessment.logos)
+    && ['acceptable','significant_change','uncertain'].includes(report.assessment.colour)
+    && ['acceptable','significant_change','uncertain'].includes(report.assessment.size)
+    && ['intact','significant_change','uncertain'].includes(report.assessment.content)
     && Array.isArray(report.differences) && report.differences.length <= 12
     && report.differences.every(d => d && ['area','reference','print'].every(k => sane(d[k]))
       && ['high','medium','low'].includes(d.severity) && ['high','medium','low'].includes(d.confidence))
@@ -110,7 +133,7 @@ export async function handleReview(request, { env = process.env, fetchImpl = fet
     const raw = content.filter(item => item.type === 'output_text').map(item => item.text).join('');
     const report = JSON.parse(raw);
     if (!validReport(report)) return fail('The AI report could not be validated. Please retry.', 'invalid_report', 502);
-    return json({ report, model, generatedAt: new Date().toISOString() });
+    return json({ report: { ...report, status: reportStatus(report) }, model, generatedAt: new Date().toISOString() });
   } catch (error) {
     if (error.name === 'TimeoutError' || error.name === 'AbortError') return fail('AI review took too long. Please try this pair again.', 'timeout', 504);
     return fail('AI review is temporarily unavailable. Please try again; your local comparison is still available.', 'upstream_error', 502);

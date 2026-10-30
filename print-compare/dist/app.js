@@ -1,5 +1,6 @@
 import * as pdfjs from './vendor/pdf.mjs';
 import { renderAiReport, reportLines } from './ai-report.js';
+import { pairStatus, overallStatus, STATUS_LABELS, ACCEPTANCE_RULES } from './assessment.js';
 pdfjs.GlobalWorkerOptions.workerSrc = './vendor/pdf.worker.mjs';
 const $ = id => document.getElementById(id);
 const state={pdf:null,pdfFile:null,proofs:[],results:[],active:0,mode:'side',busy:false,pdfLoading:false,proofLoading:0,pdfRevision:0,preset:'balanced',runPreset:'balanced',aiConfigured:null,aiRunning:false,stopAi:false,aiController:null};
@@ -8,6 +9,7 @@ const text=(tag,content,className)=>{const el=document.createElement(tag);el.tex
 const message=(content,error=false)=>{const el=$('message');el.textContent=content;el.hidden=!content;el.className=error?'error':'';};
 const size=bytes=>bytes>=1024*1024?`${(bytes/1024/1024).toFixed(1)} MB`:`${Math.ceil(bytes/1024)} KB`;
 const aiSection=text('section','','ai-report');aiSection.id='ai-report';aiSection.setAttribute('aria-label','AI artwork report');$('findings').before(aiSection);
+const overallBanner=text('div','','decision-banner');overallBanner.id='overall-status';overallBanner.setAttribute('role','status');$('result-summary').before(overallBanner);
 function invalidate(){state.results=[];$('results').hidden=true;update();}
 async function releasePdf(pdf){if(pdf)try{await pdf.loadingTask.destroy();}catch{/* A disposed loading task needs no further cleanup. */}}
 function update(){
@@ -54,7 +56,7 @@ async function prepareAiImages(result){
   }finally{page.cleanup();}
 }
 async function generateAiForResult(result){
-  result.aiPending=true;result.aiError=null;result.ai=null;renderCurrentAi();
+  result.aiPending=true;result.aiError=null;result.ai=null;renderResults();
   const controller=new AbortController();state.aiController=controller;
   try{
     const images=await prepareAiImages(result);
@@ -205,13 +207,14 @@ $('compare').onclick=async()=>{
   }finally{state.busy=false;state.aiRunning=false;update();renderPairing();if(state.results.length)renderResults();}
 };
 function renderResults(){
-  const valid=state.results.filter(r=>!r.error),review=state.results.filter(r=>r.error||r.ratioMismatch||r.regions.length||r.percent>.1||(r.ai&&r.ai.report.verdict!=='no_significant_difference')).length;
+  const valid=state.results.filter(r=>!r.error),status=overallStatus(state.results);
+  overallBanner.className=`decision-banner overall-decision ${status}`;overallBanner.replaceChildren(text('strong',`Overall ${STATUS_LABELS[status]}`,'status-badge'),text('p',status==='pass'?'All proof pairs pass the artwork acceptance rules.':status==='fail'?'At least one proof has a failing artwork change. Check the failed pairs below.':'One or more proof pairs have not been assessed reliably. Complete the AI reviews to obtain a Pass/Fail result.'));
   const summary=$('result-summary');summary.replaceChildren();
-  for(const [number,label]of[[valid.length,'Proofs compared'],[review,'Pairs to review'],[valid.reduce((sum,r)=>sum+r.regions.length,0),'Difference regions']]){
+  for(const [number,label]of[[valid.length,'Proofs compared'],[state.results.filter(r=>pairStatus(r)==='pass').length,'Passed'],[state.results.filter(r=>pairStatus(r)==='fail').length,'Failed'],[state.results.filter(r=>pairStatus(r)==='not_assessed').length,'Not assessed']]){
     const card=text('div','','summary-card');card.append(text('strong',number),text('span',label));summary.append(card);
   }
   const tabs=$('result-tabs');tabs.replaceChildren();
-  state.results.forEach((r,i)=>{const b=text('button',`Page ${r.page} · ${r.name}`);b.title=r.name;b.classList.toggle('selected',i===state.active);b.onclick=()=>{state.active=i;renderResults();};tabs.append(b);});
+  state.results.forEach((r,i)=>{const b=text('button',`${STATUS_LABELS[pairStatus(r)]} · Page ${r.page} · ${r.name}`);b.title=r.name;b.dataset.status=pairStatus(r);b.classList.toggle('selected',i===state.active);b.onclick=()=>{state.active=i;renderResults();};tabs.append(b);});
   renderViewer();renderCurrentAi();renderFindings();
 }
 function figure(caption,source){const f=document.createElement('figure');f.append(text('figcaption',caption));const c=canvas(source.width,source.height);c.getContext('2d').drawImage(source,0,0);f.append(c);return f;}
@@ -237,7 +240,7 @@ function renderFindings(){
   function add(title,detail,warning){const el=text('div','',`finding ${warning?'warning':'pass'}`);el.append(text('strong',title),text('small',detail));findings.append(el);}
   if(r.error){add('Comparison incomplete',r.error,true);return;}
   const changed=r.regions.length>0||r.percent>.1;
-  add(changed?'Visual differences detected':'No significant differences detected',`${r.percent.toFixed(2)}% of compared pixels exceed the ${state.runPreset} threshold. ${r.regions.length} grouped region${r.regions.length===1?'':'s'} to inspect. This does not certify the file for print.`,changed);
+  add(changed?'Pixel differences highlighted':'No significant pixel differences detected',`${r.percent.toFixed(2)}% of compared pixels exceed the ${state.runPreset} threshold. ${r.regions.length} grouped region${r.regions.length===1?'':'s'} to inspect. Pixel differences are for inspection only and do not determine Pass/Fail.`,changed);
   if(r.ratioMismatch)add('Page proportions differ','The JPEG was fitted without stretching. Check for crop marks, bleed, a different crop, or an incorrect page pairing before interpreting the differences.',true);
   if(Math.max(r.proofWidth,r.proofHeight)<800)add('Low-resolution reference',`The reference is ${r.proofWidth} × ${r.proofHeight} pixels. Small text changes and fine details may be missed.`,true);
   if(r.shiftX||r.shiftY)add('Small alignment offset corrected',`The comparison aligns the reference by ${-r.shiftX}px horizontally and ${-r.shiftY}px vertically. Edge strips outside the overlap are excluded.`,false);
@@ -249,6 +252,7 @@ $('opacity').oninput=()=>{$('opacity-value').textContent=`${$('opacity').value}%
 function download(blob,name){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 $('download-report').onclick=()=>{
   const lines=['PRINT COMPARE — ARTWORK & PIXEL COMPARISON REPORT',`Created: ${new Date().toLocaleString()}`,`Print PDF: ${state.pdfFile.name}`,`Pixel sensitivity: ${state.runPreset}`,'','AI observations can be mistaken. Verify reported changes against the artwork. This report is not a prepress or colour-accuracy certification.',''];
+  lines.push(`OVERALL STATUS: ${STATUS_LABELS[overallStatus(state.results)]}`,ACCEPTANCE_RULES,'');
   for(const r of state.results){lines.push(`REFERENCE: ${r.name}`,`PDF page: ${r.page}`);if(r.error){lines.push(r.error,'');continue;}
     lines.push(...reportLines(r),'LOCAL PIXEL CHECK',`Comparison resolution: ${r.width} x ${r.height}`,`Reference resolution: ${r.proofWidth} x ${r.proofHeight}`,`Flagged pixels: ${r.changed} of ${r.compared} (${r.percent.toFixed(4)}%)`,`Regions: ${r.regions.length}`,`Aspect ratio mismatch: ${r.ratioMismatch?'YES — review pairing/crop':'No'}`,`Alignment translation: x=${-r.shiftX}px, y=${-r.shiftY}px`, 'Region coordinates below use the comparison resolution, with origin at top left.');
     r.regions.forEach((region,i)=>lines.push(`  ${i+1}. x=${region.x}, y=${region.y}, width=${region.width}, height=${region.height}, flagged pixels=${region.pixels}`));lines.push('');
