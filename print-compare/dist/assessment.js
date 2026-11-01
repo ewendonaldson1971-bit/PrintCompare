@@ -1,4 +1,4 @@
-export const STATUS_LABELS = { pass: 'PASS', fail: 'FAIL', not_assessed: 'NOT ASSESSED' };
+export const STATUS_LABELS = { pass: 'PASS', fail: 'FAIL', assessing: 'ASSESSING', not_assessed: 'NOT ASSESSED' };
 export const ACCEPTANCE_RULES = 'PASS: slight size changes and minor colour shifts consistent with RGB-to-CMYK conversion. FAIL: missing or damaged logos, filled-in letter centres or other damaged lettering, significant colour changes, or other material artwork changes.';
 
 export function reportStatus(report) {
@@ -9,9 +9,11 @@ export function reportStatus(report) {
   return 'pass';
 }
 export function pairStatus(result) {
-  return result.error||result.aiPending||!result.ai ? 'not_assessed' : reportStatus(result.ai.report);
+  if(result.aiPending)return 'assessing';
+  return result.error||!result.ai ? 'not_assessed' : reportStatus(result.ai.report);
 }
 export function overallStatus(results) {
+  if(results.some(r=>pairStatus(r)==='assessing'))return 'assessing';
   if(results.some(r=>pairStatus(r)==='fail'))return 'fail';
   if(!results.length||results.some(r=>pairStatus(r)!=='pass'))return 'not_assessed';
   return 'pass';

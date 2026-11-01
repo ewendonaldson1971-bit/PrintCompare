@@ -34,7 +34,7 @@ export function renderAiReport(container,result,{busy=false,onGenerate}={}) {
   heading.append(title,button);container.append(heading);
   container.append(el('p',`Page ${result.page} · ${result.name}`,'ai-pair-label'));
   const status=pairStatus(result),decision=el('div','',`decision-banner ${status}`);
-  decision.append(el('strong',STATUS_LABELS[status],'status-badge'),el('p',result.ai?.report.decision_reason || (result.aiPending?'Artwork assessment in progress.':'Generate an AI artwork report to assess this pair.')));container.append(decision);
+  decision.append(el('strong',STATUS_LABELS[status],'status-badge'),el('p',result.aiPending?'Artwork assessment in progress.':result.ai?.report.decision_reason || 'Generate an AI artwork report to assess this pair.'));container.append(decision);
   if(result.aiPending){const p=el('p','Reviewing logos, lettering, colours, imagery and layout…','ai-report-status');p.setAttribute('role','status');container.append(p);return;}
   if(!result.ai){container.append(el('p',result.error?'This pair could not be rendered. Fix the page pairing or files before requesting an AI report.':result.aiError||'Generate a plain-language comparison of the artwork. This sends image previews of the reference and print PDF page through Netlify to OpenAI.','ai-report-status'));return;}
   const {report}=result.ai;

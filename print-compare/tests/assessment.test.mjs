@@ -24,6 +24,18 @@ test('uncertainty or missing AI review never produces a pass',()=>{
   assert.equal(reportStatus(report({...acceptable,logos:'uncertain'})),'not_assessed');
   assert.equal(reportStatus({...report(acceptable),verdict:'inconclusive'}),'not_assessed');
 });
+test('active and queued reviews show Assessing rather than Not assessed or an old verdict',()=>{
+  assert.equal(pairStatus({aiPending:true}),'assessing');
+  assert.equal(pairStatus({...result(acceptable),aiPending:true}),'assessing');
+  assert.equal(overallStatus([result(acceptable),{aiPending:true}]),'assessing');
+  assert.equal(overallStatus([result({...acceptable,lettering:'filled_or_damaged'}),{aiPending:true}]),'assessing');
+});
+test('completed, cancelled and unsuccessful reviews leave the Assessing state',()=>{
+  assert.equal(pairStatus({...result(acceptable),aiPending:false}),'pass');
+  assert.equal(pairStatus({aiPending:false,aiError:'Cancelled'}),'not_assessed');
+  assert.equal(overallStatus([result(acceptable),{aiPending:false,aiError:'Unavailable'}]),'not_assessed');
+  assert.equal(overallStatus([result({...acceptable,lettering:'filled_or_damaged'}),{aiPending:false,aiError:'Cancelled'}]),'fail');
+});
 test('one failed proof fails the job; every proof must be assessed before an overall pass',()=>{
   assert.equal(overallStatus([result(acceptable),result({...acceptable,logos:'missing_or_damaged'})]),'fail');
   assert.equal(overallStatus([result(acceptable),{}]),'not_assessed');

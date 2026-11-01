@@ -121,11 +121,11 @@ function renderCurrentAi(){
 }
 async function runSingleAi(result){
   if(state.busy||result.error)return;
-  state.busy=true;state.aiRunning=true;state.stopAi=false;$('stop-ai').disabled=false;update();renderPairing();renderCurrentAi();
+  state.busy=true;state.aiRunning=true;state.stopAi=false;result.aiPending=true;result.ai=null;result.aiError=null;$('stop-ai').disabled=false;update();renderPairing();renderResults();
   try{
     if(!await checkAiConfiguration()){result.aiError=state.aiConfigured===false?'AI reporting needs the server API key. Add OPENAI_API_KEY in Netlify with Functions scope and redeploy, then click Generate AI report.':'The AI service is unavailable. Please try again later.';renderCurrentAi();return;}
     message(`AI reviewing page ${result.page}: ${result.name}`);await generateAiForResult(result);
-  }finally{state.busy=false;state.aiRunning=false;update();renderPairing();renderCurrentAi();message('');}
+  }finally{result.aiPending=false;state.busy=false;state.aiRunning=false;update();renderPairing();renderResults();message('');}
 }
 function fileRow(name,detail,remove){const row=text('div','','file-row');row.append(text('span',name),text('small',detail));const button=text('button','×');button.type='button';button.setAttribute('aria-label',`Remove ${name}`);button.onclick=()=>{if(!state.busy)remove();};row.append(button);return row;}
 function renderFiles(){
@@ -266,7 +266,7 @@ $('compare').onclick=async()=>{
         page.cleanup();
       }catch(error){results.push({name:proofLabel(proof),referenceType:proof.kind,referencePage:proof.referencePage||null,page:proof.page,error:`Unable to compare this pair: ${error.message}`});}
     }
-    state.results=results;state.active=0;renderResults();message('');$('results').hidden=false;$('results').scrollIntoView({behavior:'smooth',block:'start'});
+    state.results=results;state.active=0;if($('ai-enabled').checked)for(const result of results)if(!result.error)result.aiPending=true;renderResults();message('');$('results').hidden=false;$('results').scrollIntoView({behavior:'smooth',block:'start'});
     if($('ai-enabled').checked){
       const available=await checkAiConfiguration();
       if(available){
@@ -285,13 +285,13 @@ $('compare').onclick=async()=>{
         for(const result of results)result.aiError=state.aiConfigured===false?'AI reporting needs the server API key. Local comparison is complete. Add OPENAI_API_KEY in Netlify with Functions scope and redeploy, then generate a report here.':'AI reporting is unavailable right now. Local comparison is complete; try generating an AI report later.';
       }
     }
-  }finally{state.busy=false;state.aiRunning=false;update();renderPairing();if(state.results.length)renderResults();}
+  }finally{for(const result of state.results)result.aiPending=false;state.busy=false;state.aiRunning=false;update();renderPairing();if(state.results.length)renderResults();}
 };
 function renderResults(){
   const valid=state.results.filter(r=>!r.error),status=overallStatus(state.results);
-  overallBanner.className=`decision-banner overall-decision ${status}`;overallBanner.replaceChildren(text('strong',`Overall ${STATUS_LABELS[status]}`,'status-badge'),text('p',status==='pass'?'All proof pairs pass the artwork acceptance rules.':status==='fail'?'At least one proof has a failing artwork change. Check the failed pairs below.':'One or more proof pairs have not been assessed reliably. Complete the AI reviews to obtain a Pass/Fail result.'));
+  overallBanner.className=`decision-banner overall-decision ${status}`;overallBanner.replaceChildren(text('strong',`Overall ${STATUS_LABELS[status]}`,'status-badge'),text('p',status==='assessing'?'Artwork assessment is in progress. Reviewing the proof pairs and lettering details.':status==='pass'?'All proof pairs pass the artwork acceptance rules.':status==='fail'?'At least one proof has a failing artwork change. Check the failed pairs below.':'One or more proof pairs have not been assessed reliably. Complete the AI reviews to obtain a Pass/Fail result.'));
   const summary=$('result-summary');summary.replaceChildren();
-  for(const [number,label]of[[valid.length,'Proofs compared'],[state.results.filter(r=>pairStatus(r)==='pass').length,'Passed'],[state.results.filter(r=>pairStatus(r)==='fail').length,'Failed'],[state.results.filter(r=>pairStatus(r)==='not_assessed').length,'Not assessed']]){
+  for(const [number,label]of[[valid.length,'Proofs compared'],[state.results.filter(r=>pairStatus(r)==='pass').length,'Passed'],[state.results.filter(r=>pairStatus(r)==='fail').length,'Failed'],[state.results.filter(r=>pairStatus(r)==='assessing').length,'Assessing'],[state.results.filter(r=>pairStatus(r)==='not_assessed').length,'Not assessed']]){
     const card=text('div','','summary-card');card.append(text('strong',number),text('span',label));summary.append(card);
   }
   const tabs=$('result-tabs');tabs.replaceChildren();
