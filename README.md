@@ -1,6 +1,6 @@
 # Print Compare
 
-A visual proofing app for comparing one print PDF with multiple JPEG references. Local pixel checks highlight changed regions. Optional OpenAI vision reports describe changes to logos, lettering, colour, imagery, and composition in a reference-versus-print table.
+A visual proofing app for comparing one print PDF with reference PDFs or JPEGs. Local pixel checks highlight changed regions. Optional OpenAI vision reports describe changes to logos, lettering, colour, imagery, and composition in a reference-versus-print table.
 
 ## Run locally
 
@@ -17,11 +17,15 @@ Open http://127.0.0.1:4173. Run `npm test` for pixel-engine, server integration,
 
 ## Workflow
 
-Upload a PDF (up to 5 GB) and JPEG references (up to 25 MB each, 30 at a time). Pair each proof with a PDF page, choose pixel sensitivity, choose whether to include AI reports, and compare. AI reports include a verdict, summary, comparison table, elements present in both, checks before printing, and limitations. Each pair can be retried separately; a running AI batch can be stopped. Inspect side-by-side previews, opacity overlay, and highlighted difference regions. Download a combined text report with AI observations, pixel statistics and region coordinates. Password-protected PDFs are not supported.
+Upload a print PDF (up to 5 GB) and reference PDFs (up to 5 GB each) or JPEGs (up to 25 MB each). PDF references add a pairing for each page, up to the 30-pair batch limit; if more pages exist, a message identifies the subset added. Change the reference-page and print-page selectors to compare any desired pages. Use “+ Page” to add another pairing from an already loaded reference PDF, or remove individual pairings. PDFs over 200 pages use numeric page selectors to avoid generating enormous menus. Compare remaining pages in another batch.
 
-PDF.js renders each page in RGB at the reference's longest dimension, capped at 1,600 pixels. The JPEG is fitted without distortion. A 3×3 smoothing pass reduces JPEG noise; a small translation search corrects rasterisation offsets. Per-channel differences exceeding the selected threshold are highlighted; connected 16-pixel tiles group discrepancies. Raw flagged-pixel percentages include small isolated differences that may not form a region. Aspect-ratio mismatches and low-resolution proofs are flagged.
+Choose pixel sensitivity and whether to include AI reports, then compare. AI reports include a verdict, summary, comparison table, elements present in both, checks before printing, and limitations. Each pair can be retried separately; a running AI batch can be stopped. Inspect side-by-side previews, opacity overlay, and highlighted difference regions. Download a combined text report with AI observations, reference PDF page identifiers, pixel statistics and region coordinates. Password-protected PDFs are not supported.
 
-AI receives the original reference composition without letterboxing or stretching, downscaled only if larger than 2,000 pixels on its longest edge. The PDF page is separately rendered at up to 2,000 pixels for the AI review, independently of the lower-resolution pixel comparison. Previews are JPEG-encoded and bounded to fit a 4.5 MB request. Image 1 is explicitly labelled the reference and image 2 the print PDF. The prompt treats image text and filenames as untrusted data and requests uncertain findings be qualified.
+Both print and reference PDFs use PDF.js range transport to read requested local file slices rather than eagerly calling `arrayBuffer()` on the entire source file. Rendering complex pages can still require substantial browser memory; the configured 5 GB acceptance limit is not a guarantee that every PDF of that size can be processed.
+
+PDF.js renders print pages in RGB at the reference preview's longest dimension, capped at 1,600 pixels. Reference PDF pages render at 1,600 pixels; JPEGs retain their native resolution up to that limit. The reference is fitted without distortion. A 3×3 smoothing pass reduces raster noise; a small translation search corrects rasterisation offsets. Per-channel differences exceeding the selected threshold are highlighted; connected 16-pixel tiles group discrepancies. Raw flagged-pixel percentages include small isolated differences that may not form a region. Aspect-ratio mismatches and low-resolution JPEG proofs are flagged.
+
+AI receives the original reference composition without letterboxing or stretching. JPEG references are downscaled only if larger than 2,000 pixels on the longest edge; reference PDF pages are rendered at up to 2,000 pixels. The print PDF page is separately rendered at up to 2,000 pixels for AI review, independently of the lower-resolution pixel comparison. Previews are JPEG-encoded and bounded to fit a 4.5 MB request. Image 1 is explicitly labelled the reference input, including source type and reference PDF page; image 2 is the print PDF page. The prompt treats image text and filenames as untrusted data and requests uncertain findings be qualified.
 
 This is visual screening, not a colour-accurate proof or a prepress certification. AI can miss or invent differences. Low-resolution references cannot verify fine details. Bleed, crop marks, spot colours, overprint, separations, font embedding, and print colour accuracy require a separate prepress check.
 
@@ -39,6 +43,6 @@ Every pair shows PASS or FAIL once assessed, with a reason. A missing, failed, s
 
 ## Privacy
 
-Pixel-only checks do not transmit artwork. With AI reports enabled, JPEG previews of each reference and rendered PDF page pass through the Netlify function to OpenAI. The full PDF is not uploaded. The app does not persist artwork or reports on its server or log image payloads. OpenAI requests use `store: false`; this does not promise zero retention, and OpenAI API data policies still apply. Reports live in browser memory until reset/reload unless downloaded. Google Fonts serves font styles only.
+Pixel-only checks do not transmit artwork. With AI reports enabled, JPEG previews of the selected reference and print PDF pages pass through the Netlify function to OpenAI. Neither full source PDF is uploaded. The app does not persist artwork or reports on its server or log image payloads. OpenAI requests use `store: false`; this does not promise zero retention, and OpenAI API data policies still apply. Reports live in browser memory until reset/reload unless downloaded. Google Fonts serves font styles only.
 
 API references: [OpenAI image inputs](https://developers.openai.com/api/docs/guides/images-vision), [Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs), [Netlify Functions](https://docs.netlify.com/build/functions/api/).

@@ -52,6 +52,11 @@ test('Netlify gateway credentials are sent to their matching server-configured b
   const invalid=await handleReview(request(),{env:{...env,OPENAI_BASE_URL:'http://gateway.example/v1'},fetchImpl:()=>assert.fail('must not transmit credentials over HTTP')});
   assert.equal(invalid.status,503);
 });
+test('a rendered PDF reference is identified by source type and selected page in the AI request',async()=>{
+  let metadata;
+  const response=await handleReview(request({...body,referenceName:'reference.pdf',referenceType:'pdf',referencePage:7}),{env,fetchImpl:async(url,options)=>{metadata=JSON.parse(options.body).input[0].content[0].text;return ok(report);}});
+  assert.equal(response.status,200);assert.match(metadata,/"referenceType":"PDF page"/);assert.match(metadata,/"referencePage":7/);
+});
 test('refused, truncated and malformed reports are not reported as completed reviews',async()=>{
   const payloads=[{status:'incomplete',output:[]},{status:'completed',output:[{content:[{type:'refusal'}]}]},{status:'completed',output:[{content:[{type:'output_text',text:'{"summary":"bogus"}'}]}]}];
   for(const payload of payloads){const response=await handleReview(request(),{env,fetchImpl:async()=>new Response(JSON.stringify(payload))});assert.ok(response.status>=400);assert.equal((await response.json()).report,undefined);}
@@ -59,7 +64,7 @@ test('refused, truncated and malformed reports are not reported as completed rev
 });
 test('download includes labelled artwork observations and reports unavailable reviews honestly',()=>{
   const lines=reportLines({ai:{report,model:'test-vision',generatedAt:'2026-10-31T00:00:00Z'}}).join('\n');
-  assert.match(lines,/JPEG reference: Absent/);assert.match(lines,/Print PDF: Black horizontal bar/);assert.match(lines,/CHECK BEFORE PRINTING/);
+  assert.match(lines,/Reference input: Absent/);assert.match(lines,/Print PDF: Black horizontal bar/);assert.match(lines,/CHECK BEFORE PRINTING/);
   assert.match(reportLines({aiError:'Not configured'}).join('\n'),/Not configured/);
 });
 test('a passing report may document acceptable size or colour differences without being rejected',async()=>{

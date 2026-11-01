@@ -1,13 +1,22 @@
 import * as pdfjs from './vendor/pdf.mjs';
 import { renderAiReport, reportLines } from './ai-report.js';
 import { pairStatus, overallStatus, STATUS_LABELS, ACCEPTANCE_RULES } from './assessment.js';
+import { openLocalPdf, renderPdfPage } from './pdf-source.js';
 pdfjs.GlobalWorkerOptions.workerSrc = './vendor/pdf.worker.mjs';
 const $ = id => document.getElementById(id);
 const state={pdf:null,pdfFile:null,proofs:[],results:[],active:0,mode:'side',busy:false,pdfLoading:false,proofLoading:0,pdfRevision:0,preset:'balanced',runPreset:'balanced',aiConfigured:null,aiRunning:false,stopAi:false,aiController:null};
 const MAX_PDF=5*1024*1024*1024,MAX_JPG=25*1024*1024;
+const MAX_PAIRS=30;
 const text=(tag,content,className)=>{const el=document.createElement(tag);el.textContent=content;if(className)el.className=className;return el;};
 const message=(content,error=false)=>{const el=$('message');el.textContent=content;el.hidden=!content;el.className=error?'error':'';};
-const size=bytes=>bytes>=1024*1024?`${(bytes/1024/1024).toFixed(1)} MB`:`${Math.ceil(bytes/1024)} KB`;
+const size=bytes=>bytes>=1024**3?`${(bytes/1024**3).toFixed(2)} GB`:bytes>=1024*1024?`${(bytes/1024/1024).toFixed(1)} MB`:`${Math.ceil(bytes/1024)} KB`;
+const proofLabel=proof=>proof.kind==='pdf'?`${proof.file.name} (reference page ${proof.referencePage})`:proof.file.name;
+function removeProofs(removed){
+  state.proofs=state.proofs.filter(p=>!removed.includes(p));
+  for(const pdf of new Set(removed.filter(p=>p.kind==='pdf').map(p=>p.pdf)))if(!state.proofs.some(p=>p.pdf===pdf))void releasePdf(pdf);
+  for(const proof of removed)if(proof.url)URL.revokeObjectURL(proof.url);
+  renderFiles();renderPairing();invalidate();
+}
 const aiSection=text('section','','ai-report');aiSection.id='ai-report';aiSection.setAttribute('aria-label','AI artwork report');$('findings').before(aiSection);
 const overallBanner=text('div','','decision-banner');overallBanner.id='overall-status';overallBanner.setAttribute('role','status');$('result-summary').before(overallBanner);
 function invalidate(){state.results=[];$('results').hidden=true;update();}
@@ -45,9 +54,7 @@ async function prepareAiImages(result){
     const viewport=page.getViewport({scale:2000/Math.max(base.width,base.height)});
     const print=canvas(Math.max(1,Math.round(viewport.width)),Math.max(1,Math.round(viewport.height)));
     await page.render({canvasContext:print.getContext('2d'),viewport,background:'white'}).promise;
-    const scale=Math.min(1,2000/Math.max(proof.width,proof.height));
-    const reference=canvas(Math.max(1,Math.round(proof.width*scale)),Math.max(1,Math.round(proof.height*scale)));
-    const img=new Image();img.src=proof.url;await img.decode();reference.getContext('2d').drawImage(img,0,0,reference.width,reference.height);
+    const reference=await renderProofSource(proof,2000);
     for(const quality of [.92,.82,.68,.5]){
       const referenceImage=reference.toDataURL('image/jpeg',quality),printImage=print.toDataURL('image/jpeg',quality);
       if(referenceImage.length+printImage.length<4_300_000)return {referenceImage,printImage};
@@ -61,7 +68,7 @@ async function generateAiForResult(result){
   try{
     const images=await prepareAiImages(result);
     if(state.stopAi)throw new DOMException('Review stopped.','AbortError');
-    const response=await fetch('/.netlify/functions/artwork-review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...images,referenceName:result.name,pdfName:state.pdfFile.name,page:result.page,referenceDimensions:`${result.proofWidth} × ${result.proofHeight} pixels`}),signal:AbortSignal.any([controller.signal,AbortSignal.timeout(65000)])});
+    const response=await fetch('/.netlify/functions/artwork-review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...images,referenceName:result.name,referenceType:result.referenceType,referencePage:result.referencePage,pdfName:state.pdfFile.name,page:result.page,referenceDimensions:`${result.proofWidth} × ${result.proofHeight} pixels${result.referenceType==='pdf'?' (rendered PDF reference page)':''}`}),signal:AbortSignal.any([controller.signal,AbortSignal.timeout(65000)])});
     let payload;try{payload=await response.json();}catch{throw new Error(response.status===429?'AI request limit reached. Please try again later.':'The AI service returned an unreadable response. Please try again.');}
     if(!response.ok)throw new Error(payload.error||'AI review could not be completed. Please retry.');
     if(!payload.report)throw new Error('The AI report was incomplete. Please retry.');
@@ -85,9 +92,19 @@ function fileRow(name,detail,remove){const row=text('div','','file-row');row.app
 function renderFiles(){
   $('pdf-list').replaceChildren();$('jpg-list').replaceChildren();
   if(state.pdfFile)$('pdf-list').append(fileRow(state.pdfFile.name,`${state.pdf.numPages} pages · ${size(state.pdfFile.size)}`,()=>{state.pdfRevision++;releasePdf(state.pdf);state.pdf=null;state.pdfFile=null;renderFiles();renderPairing();invalidate();}));
-  for(const proof of state.proofs)$('jpg-list').append(fileRow(proof.file.name,size(proof.file.size),()=>{URL.revokeObjectURL(proof.url);state.proofs=state.proofs.filter(p=>p.id!==proof.id);renderFiles();renderPairing();invalidate();}));
+  const shown=new Set();
+  for(const proof of state.proofs){
+    if(proof.kind==='pdf'){
+      if(shown.has(proof.pdf))continue;shown.add(proof.pdf);
+      const pairs=state.proofs.filter(p=>p.pdf===proof.pdf);
+      const row=fileRow(proof.file.name,`PDF · ${proof.pdf.numPages} pages · ${pairs.length} paired · ${size(proof.file.size)}`,()=>removeProofs(state.proofs.filter(p=>p.pdf===proof.pdf)));
+      const add=text('button','+ Page');add.type='button';add.className='add-reference-page';add.setAttribute('aria-label',`Add a reference page from ${proof.file.name}`);add.disabled=state.busy||state.proofLoading>0||state.proofs.length>=MAX_PAIRS;
+      add.onclick=()=>{if(state.busy||state.proofs.length>=MAX_PAIRS)return;const referencePage=Math.min(proof.pdf.numPages,Math.max(...pairs.map(p=>p.referencePage))+1);state.proofs.push({...proof,id:crypto.randomUUID(),referencePage,page:Math.min(state.proofs.length+1,state.pdf?.numPages||1)});renderFiles();renderPairing();invalidate();};
+      row.insertBefore(add,row.lastChild);$('jpg-list').append(row);
+    }else $('jpg-list').append(fileRow(proof.file.name,size(proof.file.size),()=>removeProofs([proof])));
+  }
   $('pdf-drop-title').textContent=state.pdf?'Drop a PDF to replace it':'Drop your print PDF here';
-  $('jpg-drop-title').textContent=state.proofs.length?'Drop more JPEG proofs here':'Drop your JPEG proofs here';
+  $('jpg-drop-title').textContent=state.proofs.length?'Drop more PDF or JPEG proofs here':'Drop your PDF or JPEG proofs here';
 }
 async function loadPdf(files){
   if(state.busy||!files.length)return;
@@ -95,11 +112,8 @@ async function loadPdf(files){
   const file=files[0];
   if(!/\.pdf$/i.test(file.name)||file.size>MAX_PDF){message('Choose a PDF smaller than 5 GB.',true);return;}
   const revision=++state.pdfRevision;state.pdfLoading=true;update();message('Opening your print PDF…');
-  let task;
   try{
-    task=pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer()),cMapUrl:'./vendor/cmaps/',cMapPacked:true,standardFontDataUrl:'./vendor/standard_fonts/',wasmUrl:'./vendor/wasm/',isEvalSupported:false});
-    task.onPassword=()=>{task.destroy();};
-    const pdf=await task.promise;
+    const pdf=await openLocalPdf(file,pdfjs);
     if(revision!==state.pdfRevision){await releasePdf(pdf);return;}
     releasePdf(state.pdf);state.pdf=pdf;state.pdfFile=file;
     for(let i=0;i<state.proofs.length;i++)state.proofs[i].page=Math.min(i+1,pdf.numPages);
@@ -111,30 +125,52 @@ async function loadProofs(files){
   if(state.busy||!files.length)return;
   state.proofLoading++;update();const errors=[];
   try{for(const file of files){
-    if(!/\.(jpe?g)$/i.test(file.name)||file.size>MAX_JPG){errors.push(`${file.name}: choose a JPEG smaller than 25 MB.`);continue;}
-    if(state.proofs.length>=30){errors.push('Up to 30 proofs can be compared at once.');break;}
+    const isPdf=/\.pdf$/i.test(file.name);
+    if((!isPdf&&!/\.(jpe?g)$/i.test(file.name))||file.size>(isPdf?MAX_PDF:MAX_JPG)){errors.push(`${file.name}: choose a PDF up to 5 GB or a JPEG up to 25 MB.`);continue;}
+    if(state.proofs.length>=MAX_PAIRS){errors.push('Up to 30 page pairs can be compared in one batch.');break;}
     if(state.proofs.some(p=>p.file.name===file.name&&p.file.size===file.size&&p.file.lastModified===file.lastModified))continue;
+    if(isPdf){
+      let pdf;
+      try{
+        message(`Opening reference PDF: ${file.name}…`);pdf=await openLocalPdf(file,pdfjs);
+        const count=Math.min(pdf.numPages,MAX_PAIRS-state.proofs.length);
+        if(count<=0){await releasePdf(pdf);errors.push('This batch already has 30 page pairs.');continue;}
+        for(let referencePage=1;referencePage<=count;referencePage++)state.proofs.push({id:crypto.randomUUID(),kind:'pdf',file,pdf,referencePage,page:Math.min(state.proofs.length+1,state.pdf?.numPages||1)});
+        if(count<pdf.numPages)errors.push(`${file.name}: added the first ${count} pages. This batch supports 30 pairs; use the reference-page selectors to choose other pages, or compare remaining pages in another batch.`);
+      }catch{if(pdf)await releasePdf(pdf);errors.push(`${file.name}: could not open this reference PDF. Check for password protection, corruption, or browser memory limits.`);}
+      continue;
+    }
     const url=URL.createObjectURL(file);
     try{
       const img=new Image();img.src=url;await img.decode();
       if(img.naturalWidth*img.naturalHeight>120000000)throw new Error('Too large');
-      state.proofs.push({id:crypto.randomUUID(),file,url,width:img.naturalWidth,height:img.naturalHeight,page:Math.min(state.proofs.length+1,state.pdf?.numPages||1)});
+      state.proofs.push({id:crypto.randomUUID(),kind:'jpeg',file,url,width:img.naturalWidth,height:img.naturalHeight,page:Math.min(state.proofs.length+1,state.pdf?.numPages||1)});
     }catch{URL.revokeObjectURL(url);errors.push(`${file.name}: could not decode this JPEG or its dimensions are too large.`);}
   }
   renderFiles();renderPairing();invalidate();message(errors.join(' '),errors.length>0);
-  }finally{state.proofLoading--;update();$('jpg-input').value='';}
+  }finally{state.proofLoading--;update();renderFiles();$('jpg-input').value='';}
+}
+function pagePicker(total,current,label,onChange){
+  const control=total<=200?document.createElement('select'):document.createElement('input');
+  if(total<=200)for(let n=1;n<=total;n++)control.add(new Option(`Page ${n}`,n));
+  else{control.type='number';control.min=1;control.max=total;control.step=1;}
+  control.value=current;control.disabled=state.busy;control.setAttribute('aria-label',label);
+  control.onchange=()=>{const page=Number(control.value);if(!Number.isInteger(page)||page<1||page>total){control.value=current;message(`Choose a page from 1 to ${total}.`,true);return;}onChange(page);};return control;
 }
 function renderPairing(){
   $('pairing').hidden=!state.pdf||!state.proofs.length;if($('pairing').hidden)return;
   $('pairing-summary').textContent=`${state.proofs.length} proof${state.proofs.length===1?'':'s'}`;
   const rows=$('pairing-rows');rows.replaceChildren();
-  for(const proof of state.proofs){
-    const row=text('div','','pairing-row'),img=new Image();img.src=proof.url;img.alt='';
-    const select=document.createElement('select');select.setAttribute('aria-label',`PDF page for ${proof.file.name}`);
-    for(let n=1;n<=state.pdf.numPages;n++){const option=new Option(`Page ${n}`,n);select.add(option);}
-    select.value=proof.page;select.disabled=state.busy;
-    select.onchange=()=>{proof.page=Number(select.value);invalidate();};
-    row.append(img,text('span',proof.file.name),text('span','→'),select);row.children[2].style.flex='0';rows.append(row);
+  for(const [index,proof]of state.proofs.entries()){
+    const row=text('div','','pairing-row');
+    if(proof.kind==='pdf')row.append(text('span','PDF','pdf-proof-icon'));else{const img=new Image();img.src=proof.url;img.alt='';row.append(img);}
+    row.append(text('span',proof.file.name,'proof-pair-name'));
+    if(proof.kind==='pdf'){
+      const label=text('label','','pair-page-label');label.append(text('small','Reference'),pagePicker(proof.pdf.numPages,proof.referencePage,`Reference page for ${proof.file.name}, pair ${index+1}`,page=>{proof.referencePage=page;invalidate();}));row.append(label);
+    }
+    row.append(text('span','→','pair-arrow'));
+    const printLabel=text('label','','pair-page-label');printLabel.append(text('small','Print PDF'),pagePicker(state.pdf.numPages,proof.page,`Print PDF page for ${proof.file.name}, pair ${index+1}`,page=>{proof.page=page;invalidate();}));row.append(printLabel);
+    const remove=text('button','×','remove-pair');remove.type='button';remove.disabled=state.busy;remove.setAttribute('aria-label',`Remove pairing ${index+1} for ${proof.file.name}`);remove.onclick=()=>removeProofs([proof]);row.append(remove);rows.append(row);
   }
   const control=text('label','','sensitivity');control.append(text('span','Comparison sensitivity'));
   const select=document.createElement('select');select.id='sensitivity';
@@ -152,6 +188,12 @@ function wireDrop(id,inputId,handler){
 wireDrop('pdf-drop','pdf-input',loadPdf);wireDrop('jpg-drop','jpg-input',loadProofs);
 window.addEventListener('dragover',e=>e.preventDefault());window.addEventListener('drop',e=>e.preventDefault());
 function canvas(width,height){const c=document.createElement('canvas');c.width=width;c.height=height;return c;}
+async function renderProofSource(proof,longest){
+  if(proof.kind==='pdf'){
+    return renderPdfPage(proof.pdf,proof.referencePage,longest,canvas);
+  }
+  const scale=Math.min(1,longest/Math.max(proof.width,proof.height)),source=canvas(Math.max(1,Math.round(proof.width*scale)),Math.max(1,Math.round(proof.height*scale))),img=new Image();img.src=proof.url;await img.decode();source.getContext('2d').drawImage(img,0,0,source.width,source.height);return source;
+}
 function analyse(a,b,width,height,preset){return new Promise((resolve,reject)=>{
   const worker=new Worker('./comparison-worker.js',{type:'module'});
   worker.onmessage=e=>{worker.terminate();e.data.error?reject(new Error(e.data.error)):resolve(e.data.result);};
@@ -164,26 +206,26 @@ $('compare').onclick=async()=>{
   const results=[];
   try{
     for(let index=0;index<state.proofs.length;index++){
-      const proof=state.proofs[index];message(`Comparing proof ${index+1} of ${state.proofs.length}: ${proof.file.name}`);
+      const proof=state.proofs[index];message(`Comparing proof ${index+1} of ${state.proofs.length}: ${proofLabel(proof)}`);
       await new Promise(r=>requestAnimationFrame(r));
       try{
         const page=await state.pdf.getPage(proof.page),base=page.getViewport({scale:1});
-        const longest=Math.min(1600,Math.max(proof.width,proof.height));
+        const referenceSource=await renderProofSource(proof,1600);
+        const longest=Math.max(referenceSource.width,referenceSource.height);
         const viewport=page.getViewport({scale:longest/Math.max(base.width,base.height)});
         const width=Math.max(1,Math.round(viewport.width)),height=Math.max(1,Math.round(viewport.height));
         const print=canvas(width,height),reference=canvas(width,height);
         await page.render({canvasContext:print.getContext('2d'),viewport,background:'white'}).promise;
-        const img=new Image();img.src=proof.url;await img.decode();
         const ctx=reference.getContext('2d',{willReadFrequently:true});ctx.fillStyle='white';ctx.fillRect(0,0,width,height);
-        const scale=Math.min(width/proof.width,height/proof.height),rw=proof.width*scale,rh=proof.height*scale;
-        ctx.drawImage(img,(width-rw)/2,(height-rh)/2,rw,rh);
-        const ratioMismatch=Math.abs((proof.width/proof.height)/(base.width/base.height)-1)>.015;
+        const scale=Math.min(width/referenceSource.width,height/referenceSource.height),rw=referenceSource.width*scale,rh=referenceSource.height*scale;
+        ctx.drawImage(referenceSource,(width-rw)/2,(height-rh)/2,rw,rh);
+        const ratioMismatch=Math.abs((referenceSource.width/referenceSource.height)/(base.width/base.height)-1)>.015;
         const result=await analyse(print.getContext('2d',{willReadFrequently:true}).getImageData(0,0,width,height).data,ctx.getImageData(0,0,width,height).data,width,height,state.runPreset);
         const difference=canvas(width,height);difference.getContext('2d').putImageData(new ImageData(result.diff,width,height),0,0);
         delete result.diff;
-        results.push({...result,proofId:proof.id,name:proof.file.name,page:proof.page,width,height,proofWidth:proof.width,proofHeight:proof.height,ratioMismatch,print,reference,difference});
+        results.push({...result,proofId:proof.id,name:proofLabel(proof),referenceType:proof.kind,referencePage:proof.referencePage||null,page:proof.page,width,height,proofWidth:proof.width||referenceSource.width,proofHeight:proof.height||referenceSource.height,ratioMismatch,print,reference,difference});
         page.cleanup();
-      }catch(error){results.push({name:proof.file.name,page:proof.page,error:`Unable to compare this pair: ${error.message}`});}
+      }catch(error){results.push({name:proofLabel(proof),referenceType:proof.kind,referencePage:proof.referencePage||null,page:proof.page,error:`Unable to compare this pair: ${error.message}`});}
     }
     state.results=results;state.active=0;renderResults();message('');$('results').hidden=false;$('results').scrollIntoView({behavior:'smooth',block:'start'});
     if($('ai-enabled').checked){
@@ -225,7 +267,7 @@ function renderViewer(){
   if(result.error){container.append(text('p','Preview unavailable for this pair.'));$('viewer-dimensions').textContent='';return;}
   $('viewer-dimensions').textContent=`${result.width} × ${result.height} px`;
   if(state.mode==='side'){
-    container.append(figure('Print PDF',result.print),figure('JPEG reference',result.reference));$('view-caption').textContent='Print PDF / JPEG reference';
+    container.append(figure(`Print PDF · page ${result.page}`,result.print),figure(result.referenceType==='pdf'?`Reference PDF · page ${result.referencePage}`:'JPEG reference',result.reference));$('view-caption').textContent=result.referenceType==='pdf'?`Print PDF page ${result.page} / reference PDF page ${result.referencePage}`:'Print PDF / JPEG reference';
   }else if(state.mode==='overlay'){
     const c=canvas(result.width,result.height),ctx=c.getContext('2d');ctx.drawImage(result.print,0,0);ctx.globalAlpha=Number($('opacity').value)/100;ctx.drawImage(result.reference,-result.shiftX,-result.shiftY);container.append(figure('PDF + reference overlay',c));$('view-caption').textContent='Blend the reference over the PDF to inspect alignment.';
   }else{
@@ -241,8 +283,8 @@ function renderFindings(){
   if(r.error){add('Comparison incomplete',r.error,true);return;}
   const changed=r.regions.length>0||r.percent>.1;
   add(changed?'Pixel differences highlighted':'No significant pixel differences detected',`${r.percent.toFixed(2)}% of compared pixels exceed the ${state.runPreset} threshold. ${r.regions.length} grouped region${r.regions.length===1?'':'s'} to inspect. Pixel differences are for inspection only and do not determine Pass/Fail.`,changed);
-  if(r.ratioMismatch)add('Page proportions differ','The JPEG was fitted without stretching. Check for crop marks, bleed, a different crop, or an incorrect page pairing before interpreting the differences.',true);
-  if(Math.max(r.proofWidth,r.proofHeight)<800)add('Low-resolution reference',`The reference is ${r.proofWidth} × ${r.proofHeight} pixels. Small text changes and fine details may be missed.`,true);
+  if(r.ratioMismatch)add('Page proportions differ','The reference was fitted without stretching. Check for crop marks, bleed, a different crop, or an incorrect page pairing before interpreting the differences.',true);
+  if(r.referenceType!=='pdf'&&Math.max(r.proofWidth,r.proofHeight)<800)add('Low-resolution reference',`The reference is ${r.proofWidth} × ${r.proofHeight} pixels. Small text changes and fine details may be missed.`,true);
   if(r.shiftX||r.shiftY)add('Small alignment offset corrected',`The comparison aligns the reference by ${-r.shiftX}px horizontally and ${-r.shiftY}px vertically. Edge strips outside the overlap are excluded.`,false);
   for(const [i,region] of r.regions.slice(0,12).entries())add(`Region ${i+1} · ${Math.round(region.x/r.width*100)}% from left, ${Math.round(region.y/r.height*100)}% from top`,`${region.width} × ${region.height} pixels · ${region.pixels.toLocaleString()} flagged pixels in this region`,true);
   if(r.regions.length>12)add(`${r.regions.length-12} more regions`,'All regions are highlighted in the Differences view and included in the report.',true);
@@ -262,7 +304,7 @@ $('download-report').onclick=()=>{
 };
 $('new-comparison').onclick=()=>{
   if(state.busy||state.pdfLoading||state.proofLoading)return;
-  state.pdfRevision++;releasePdf(state.pdf);state.pdf=null;state.pdfFile=null;for(const proof of state.proofs)URL.revokeObjectURL(proof.url);state.proofs=[];state.results=[];state.active=0;state.mode='side';state.preset='balanced';$('opacity').value=50;$('opacity-value').textContent='50%';
+  state.pdfRevision++;releasePdf(state.pdf);state.pdf=null;state.pdfFile=null;const references=state.proofs;state.proofs=[];for(const pdf of new Set(references.filter(p=>p.kind==='pdf').map(p=>p.pdf)))void releasePdf(pdf);for(const proof of references)if(proof.url)URL.revokeObjectURL(proof.url);state.results=[];state.active=0;state.mode='side';state.preset='balanced';$('opacity').value=50;$('opacity-value').textContent='50%';
   renderFiles();renderPairing();invalidate();message('');window.scrollTo({top:0,behavior:'smooth'});
 };
 $('how-nav').onclick=()=>$('how-dialog').showModal();for(const button of document.querySelectorAll('.dialog-close'))button.onclick=()=>$('how-dialog').close();
