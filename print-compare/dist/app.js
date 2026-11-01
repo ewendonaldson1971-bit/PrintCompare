@@ -3,6 +3,7 @@ import { renderAiReport, reportLines } from './ai-report.js';
 import { pairStatus, overallStatus, STATUS_LABELS, ACCEPTANCE_RULES } from './assessment.js';
 import { openLocalPdf, renderPdfPage, renderPdfRegion } from './pdf-source.js';
 import { combineDetailRegions, encodeReviewImages } from './detail-regions.js';
+import { planDetailBatches, mergeReviewBatches } from './review-batches.js';
 pdfjs.GlobalWorkerOptions.workerSrc = './vendor/pdf.worker.mjs';
 const $ = id => document.getElementById(id);
 const state={pdf:null,pdfFile:null,proofs:[],results:[],active:0,mode:'side',busy:false,pdfLoading:false,proofLoading:0,pdfRevision:0,preset:'balanced',runPreset:'balanced',aiConfigured:null,aiRunning:false,stopAi:false,aiController:null};
@@ -63,7 +64,7 @@ async function renderReferenceRegion(proof,region,longest){
   const w=proof.width*region.width,h=proof.height*region.height,scale=Math.min(1,longest/Math.max(w,h)),out=canvas(Math.max(1,Math.round(w*scale)),Math.max(1,Math.round(h*scale)));
   out.getContext('2d').drawImage(img,proof.width*region.x,proof.height*region.y,w,h,0,0,out.width,out.height);return out;
 }
-async function prepareAiImages(result){
+async function* prepareAiBatches(result){
   const proof=state.proofs.find(p=>p.id===result.proofId);
   if(!proof)throw new Error('The reference is no longer available. Compare the files again.');
   const page=await state.pdf.getPage(result.page),base=page.getViewport({scale:1});
@@ -79,27 +80,39 @@ async function prepareAiImages(result){
     const printRegions=await locateLettering(printAnalysis);
     const referenceAnalysis=referencePage?await renderPdfPage(proof.pdf,proof.referencePage,inspectionLength(reference.width,reference.height),canvas,{cleanup:false}):await renderProofSource(proof,inspectionLength(reference.width,reference.height));
     const referenceRegions=await locateLettering(referenceAnalysis);
-    const selection=combineDetailRegions(referenceRegions,printRegions),detailCanvases=[];
-    for(const region of selection.regions){
-      if(state.stopAi)throw new DOMException('Review stopped.','AbortError');
-      const crop={x:region.x,y:region.y,width:region.width,height:region.height};
-      detailCanvases.push({region:crop,reference:await renderReferenceRegion(proof,crop,1800),print:await renderPdfRegion(state.pdf,result.page,crop,1800,canvas,{cleanup:false})});
+    const selection=combineDetailRegions(referenceRegions,printRegions),batches=planDetailBatches(selection.regions);
+    result.reviewPlan={batches:batches.length,regions:selection.regions.length};
+    for(const [index,regions]of batches.entries()){
+      const detailCanvases=[];
+      for(const [regionIndex,region]of regions.entries()){
+        if(state.stopAi)throw new DOMException('Review stopped.','AbortError');
+        message(`Preparing lettering close-up ${index*8+regionIndex+1} of ${selection.regions.length}: ${result.name}`);
+        const crop={x:region.x,y:region.y,width:region.width,height:region.height};
+        detailCanvases.push({region:crop,reference:await renderReferenceRegion(proof,crop,1800),print:await renderPdfRegion(state.pdf,result.page,crop,1800,canvas,{cleanup:false})});
+      }
+      const payload=encodeReviewImages(reference,print,detailCanvases,true);result.detailPreviews.push(...payload.detailPairs);
+      yield {...payload,detailBatch:{index:index+1,total:batches.length,expectedRegions:selection.regions.length}};
     }
-    const payload=encodeReviewImages(reference,print,detailCanvases,selection.complete);result.detailPreviews=payload.detailPairs;return payload;
   }finally{page.cleanup();referencePage?.cleanup();}
 }
 async function generateAiForResult(result){
-  result.aiPending=true;result.aiError=null;result.ai=null;result.detailPreviews=[];renderResults();
-  const controller=new AbortController();state.aiController=controller;
+  result.aiPending=true;result.aiError=null;result.ai=null;result.detailPreviews=[];result.reviewPlan=null;renderResults();
+  const controller=new AbortController(),responses=[];state.aiController=controller;
   try{
-    const images=await prepareAiImages(result);
-    if(state.stopAi)throw new DOMException('Review stopped.','AbortError');
-    const response=await fetch('/.netlify/functions/artwork-review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...images,referenceName:result.name,referenceType:result.referenceType,referencePage:result.referencePage,pdfName:state.pdfFile.name,page:result.page,referenceDimensions:`${result.proofWidth} × ${result.proofHeight} pixels${result.referenceType==='pdf'?' (rendered PDF reference page)':''}`}),signal:AbortSignal.any([controller.signal,AbortSignal.timeout(65000)])});
-    let payload;try{payload=await response.json();}catch{throw new Error(response.status===429?'AI request limit reached. Please try again later.':'The AI service returned an unreadable response. Please try again.');}
-    if(!response.ok)throw new Error(payload.error||'AI review could not be completed. Please retry.');
-    if(!payload.report)throw new Error('The AI report was incomplete. Please retry.');
-    result.ai=payload;
-  }catch(error){result.aiError=error.name==='AbortError'?'AI review was stopped. No completed AI review was recorded.':error.name==='TimeoutError'?'AI review took too long. Please try this pair again.':error.message;}
+    for await(const images of prepareAiBatches(result)){
+      if(state.stopAi)throw new DOMException('Review stopped.','AbortError');
+      message(`Reviewing lettering batch ${images.detailBatch.index} of ${images.detailBatch.total}: ${result.name}`);
+      const response=await fetch('/.netlify/functions/artwork-review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...images,referenceName:result.name,referenceType:result.referenceType,referencePage:result.referencePage,pdfName:state.pdfFile.name,page:result.page,referenceDimensions:`${result.proofWidth} × ${result.proofHeight} pixels${result.referenceType==='pdf'?' (rendered PDF reference page)':''}`}),signal:AbortSignal.any([controller.signal,AbortSignal.timeout(65000)])});
+      let payload;try{payload=await response.json();}catch{throw new Error(response.status===429?'AI request limit reached. Please try again later.':'The AI service returned an unreadable response. Please try again.');}
+      if(!response.ok)throw new Error(payload.error||'AI review could not be completed. Please retry.');
+      if(!payload.report)throw new Error('The AI report was incomplete. Please retry.');
+      responses.push(payload);
+    }
+    result.ai=mergeReviewBatches(responses,result.reviewPlan.batches,result.reviewPlan.regions);
+  }catch(error){
+    result.aiError=error.name==='AbortError'?'AI review was stopped before all batches completed.':error.name==='TimeoutError'?'AI review took too long. Please try this pair again.':error.message;
+    if(responses.length)result.ai=mergeReviewBatches(responses,result.reviewPlan.batches,result.reviewPlan.regions);
+  }
   finally{result.aiPending=false;state.aiController=null;renderResults();}
 }
 function renderCurrentAi(){

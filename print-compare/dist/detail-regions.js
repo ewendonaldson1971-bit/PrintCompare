@@ -65,7 +65,7 @@ export function findLetteringRegions(data,width,height){
     return {x:x/width,y:y/height,width:(right-x)/width,height:(bottom-y)/height,score:b.score};
   });
 }
-export function combineDetailRegions(reference,print,maxRegions=MAX_DETAIL_REGIONS){
+export function combineDetailRegions(reference,print,maxRegions=Infinity){
   const regions=[];
   for(const region of [...reference,...print]){
     let combined={...region};

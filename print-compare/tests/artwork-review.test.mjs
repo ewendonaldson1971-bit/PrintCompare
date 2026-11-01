@@ -80,6 +80,12 @@ test('detail images are labelled reference then print and reach the model at hig
   assert.equal(response.status,200);assert.equal((await response.json()).detailCount,1);assert.match(content[4].text,/First image: REFERENCE. Second image: PRINT/);assert.equal(content[5].detail,'high');assert.equal(content[6].detail,'high');
   const bad=await handleReview(request({...body,detailPairs:[{...detailPairs[0],referenceImage:'https://internal/private'}]}),{env,fetchImpl:()=>assert.fail('must reject non-data detail images')});assert.equal(bad.status,400);
 });
+test('batch scope is validated and returned so the app can prove complete coverage',async()=>{
+  const detailBatch={index:2,total:3,expectedRegions:19};let prompt;
+  const response=await handleReview(request({...body,detailBatch}),{env,fetchImpl:async(url,options)=>{prompt=JSON.parse(options.body).input[0].content[0].text;return ok(report);}});
+  assert.deepEqual((await response.json()).detailBatch,detailBatch);assert.match(prompt,/"index":2,"total":3,"expectedRegions":19/);
+  const bad=await handleReview(request({...body,detailBatch:{index:4,total:3,expectedRegions:19}}),{env,fetchImpl:()=>assert.fail('must reject invalid batch scope')});assert.equal(bad.status,400);
+});
 test('lossless PNG lettering crops are accepted, while invalid crop coordinates are rejected',async()=>{
   const {createCanvas}=await import('@napi-rs/canvas');const crop=createCanvas(40,40).toDataURL('image/png');
   const detail={region:{x:.1,y:.8,width:.3,height:.1},referenceImage:crop,printImage:crop};

@@ -14,7 +14,8 @@ test('paired crops merge small bleed offsets and adjoining caption fragments',()
 });
 test('insufficient crop capacity is explicitly reported, never silently called complete',()=>{
   const regions=Array.from({length:10},(_,i)=>({x:(i%5)*.2,y:Math.floor(i/5)*.5,width:.05,height:.05,score:i+1}));
-  const result=combineDetailRegions(regions,[]);assert.equal(result.regions.length,8);assert.equal(result.detected,10);assert.equal(result.complete,false);
+  const result=combineDetailRegions(regions,[],8);assert.equal(result.regions.length,8);assert.equal(result.detected,10);assert.equal(result.complete,false);
+  const all=combineDetailRegions(regions,[]);assert.equal(all.regions.length,10);assert.equal(all.complete,true);
 });
 test('a blank page does not invent lettering regions',()=>{
   const c=createCanvas(200,100),ctx=c.getContext('2d');ctx.fillStyle='white';ctx.fillRect(0,0,200,100);assert.deepEqual(findLetteringRegions(ctx.getImageData(0,0,200,100).data,200,100),[]);

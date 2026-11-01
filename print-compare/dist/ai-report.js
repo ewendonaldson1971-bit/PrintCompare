@@ -12,9 +12,15 @@ export function reportLines(result) {
   lines.push(`Decision: ${report.decision_reason}`,VERDICTS[report.verdict],report.summary,`Model: ${model}`,`Generated: ${generatedAt}`,'');
   lines.push(`Reference source: ${result.referenceType==='pdf'?`PDF page ${result.referencePage}`:'JPEG'}`);
   lines.push(`Lettering detail pairs reviewed: ${result.ai.detailCount??0}`);
+  if(result.ai.coverage)lines.push(`Review coverage: ${result.ai.coverage.reviewedBatches}/${result.ai.coverage.expectedBatches} batches, ${result.ai.coverage.reviewedRegions}/${result.ai.coverage.expectedRegions} regions (${result.ai.coverage.complete?'complete':'incomplete'})`);
+  if(result.aiError)lines.push(`Review issue: ${result.aiError}`);
   for (const d of report.differences) lines.push(`${d.area} — ${d.severity} priority; ${d.confidence} confidence`,`  Reference input: ${d.reference}`,`  Print PDF: ${d.print}`,'');
   for(const [title,items] of [['PRESENT IN BOTH',report.shared_elements],['CHECK BEFORE PRINTING',report.checks],['REVIEW LIMITATIONS',report.limitations]]){
     if(items.length) lines.push(title,...items.map(item=>`- ${item}`),'');
+  }
+  if(result.ai.batchReports?.length>1){
+    lines.push('DETAIL BATCH RECORDS');
+    for(const batch of result.ai.batchReports)lines.push(`Batch ${batch.detailBatch.index}/${batch.detailBatch.total}: ${batch.detailCount} regions`,batch.report.decision_reason,batch.report.summary,'');
   }
   return lines;
 }
@@ -34,6 +40,8 @@ export function renderAiReport(container,result,{busy=false,onGenerate}={}) {
   const {report}=result.ai;
   container.append(el('strong',VERDICTS[report.verdict],`ai-verdict ${report.verdict}`),el('p',report.summary,'ai-summary'));
   container.append(el('p',ACCEPTANCE_RULES,'acceptance-rules'));
+  if(result.ai.coverage)container.append(el('p',`${result.ai.coverage.reviewedRegions} of ${result.ai.coverage.expectedRegions} detail regions reviewed · ${result.ai.coverage.reviewedBatches} of ${result.ai.coverage.expectedBatches} batches complete`,'ai-report-meta'));
+  if(result.aiError)container.append(el('p',result.aiError,'ai-report-status'));
   if(result.detailPreviews?.length){
     const details=document.createElement('details');details.className='lettering-details';details.append(el('summary',`Lettering close-ups (${result.detailPreviews.length} regions)`));
     for(const [i,d]of result.detailPreviews.entries()){
