@@ -4,7 +4,7 @@ import { pairStatus, overallStatus, STATUS_LABELS, ACCEPTANCE_RULES } from './as
 pdfjs.GlobalWorkerOptions.workerSrc = './vendor/pdf.worker.mjs';
 const $ = id => document.getElementById(id);
 const state={pdf:null,pdfFile:null,proofs:[],results:[],active:0,mode:'side',busy:false,pdfLoading:false,proofLoading:0,pdfRevision:0,preset:'balanced',runPreset:'balanced',aiConfigured:null,aiRunning:false,stopAi:false,aiController:null};
-const MAX_PDF=500*1024*1024,MAX_JPG=25*1024*1024;
+const MAX_PDF=5*1024*1024*1024,MAX_JPG=25*1024*1024;
 const text=(tag,content,className)=>{const el=document.createElement(tag);el.textContent=content;if(className)el.className=className;return el;};
 const message=(content,error=false)=>{const el=$('message');el.textContent=content;el.hidden=!content;el.className=error?'error':'';};
 const size=bytes=>bytes>=1024*1024?`${(bytes/1024/1024).toFixed(1)} MB`:`${Math.ceil(bytes/1024)} KB`;
@@ -93,7 +93,7 @@ async function loadPdf(files){
   if(state.busy||!files.length)return;
   if(files.length!==1){message('Please add one PDF print file.',true);return;}
   const file=files[0];
-  if(!/\.pdf$/i.test(file.name)||file.size>MAX_PDF){message('Choose a PDF smaller than 500 MB.',true);return;}
+  if(!/\.pdf$/i.test(file.name)||file.size>MAX_PDF){message('Choose a PDF smaller than 5 GB.',true);return;}
   const revision=++state.pdfRevision;state.pdfLoading=true;update();message('Opening your print PDF…');
   let task;
   try{
@@ -104,7 +104,7 @@ async function loadPdf(files){
     releasePdf(state.pdf);state.pdf=pdf;state.pdfFile=file;
     for(let i=0;i<state.proofs.length;i++)state.proofs[i].page=Math.min(i+1,pdf.numPages);
     renderFiles();renderPairing();invalidate();message('');
-  }catch(error){if(revision===state.pdfRevision)message('Could not open this PDF. Check that it is valid and not password protected.',true);}
+  }catch(error){if(revision===state.pdfRevision)message('Could not open this PDF. Check that it is valid and not password protected. Large PDFs may exceed your browser memory limits.',true);}
   finally{if(revision===state.pdfRevision){state.pdfLoading=false;update();}$('pdf-input').value='';}
 }
 async function loadProofs(files){
