@@ -16,6 +16,15 @@ test('missing key gives a setup message and never calls OpenAI',async()=>{
   let calls=0;const response=await handleReview(request(),{env:{},fetchImpl:()=>{calls++;}});
   assert.equal(response.status,503);assert.equal((await response.json()).code,'configuration_required');assert.equal(calls,0);
 });
+
+test('server returns a usage-based AUD estimate using the actual response model',async()=>{
+  const payload={status:'completed',model:'gpt-4.1-2025-04-14',usage:{input_tokens:10000,input_tokens_details:{cached_tokens:4000},output_tokens:1000},output:[{content:[{type:'output_text',text:JSON.stringify(report)}]}]};
+  const response=await handleReview(request(),{env,fetchImpl:async()=>new Response(JSON.stringify(payload))});
+  const result=await response.json();assert.equal(result.model,payload.model);assert.equal(result.cost.usd,0.022);assert.equal(result.cost.aud,0.022/0.7);
+  payload.model='unpriced-model';
+  const unpriced=await handleReview(request(),{env,fetchImpl:async()=>new Response(JSON.stringify(payload))});
+  assert.equal((await unpriced.json()).cost,null);
+});
 test('configuration status exposes only whether a key exists',async()=>{
   const response=await handleReview(new Request('https://print.example/.netlify/functions/artwork-review'),{env});
   assert.deepEqual(await response.json(),{configured:true});assert.equal(response.headers.get('cache-control'),'no-store');

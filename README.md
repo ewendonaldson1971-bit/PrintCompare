@@ -47,6 +47,10 @@ The client verifies batch indexes, expected region counts, and completed respons
 
 Every pair shows PASS or FAIL once assessed, with a reason. A missing, failed, stopped, or inconclusive AI review shows NOT ASSESSED rather than an unearned pass. One failed pair fails the overall job; an overall pass requires every pair to pass. Decisions and acceptance criteria are included in the downloaded report.
 
+## Review cost estimates
+
+Each current AI report and the current job total display estimated AI cost in AUD, including returned detail-batch requests. The fixed exchange rate is US$0.70 = A$1.00 (USD cost divided by 0.70). Estimates use returned token usage and standard GPT-4.1 rates verified on 2026-11-01: US$2 input, US$0.50 cached input, US$8 output per million tokens. The actual response model is used; unsupported models or absent/invalid usage show unavailable, and partially priced totals are labelled partial. Values are summed before display rounding. Downloaded reports include the estimate, exchange rate and batch costs. These are current-report estimates, not billing records: hosting, taxes, previous regenerated reports and requests without returned usage are excluded. Rates live in `print-compare/dist/review-cost.js`; update them when provider pricing changes. [OpenAI model pricing](https://developers.openai.com/api/docs/models/gpt-4.1).
+
 ## Privacy
 
 Pixel-only checks do not transmit artwork. With AI reports enabled, JPEG previews of the selected reference and print PDF pages pass through the Netlify function to OpenAI. Neither full source PDF is uploaded. The app does not persist artwork or reports on its server or log image payloads. OpenAI requests use `store: false`; this does not promise zero retention, and OpenAI API data policies still apply. Reports live in browser memory until reset/reload unless downloaded. Google Fonts serves font styles only.

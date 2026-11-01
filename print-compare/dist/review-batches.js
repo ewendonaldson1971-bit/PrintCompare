@@ -1,4 +1,5 @@
 import {reportStatus} from './assessment.js';
+import {sumReviewCosts} from './review-cost.js';
 
 export function planDetailBatches(regions,maxPerBatch=8){
   if(!Number.isInteger(maxPerBatch)||maxPerBatch<1)throw new Error('Invalid review batch size.');
@@ -29,5 +30,5 @@ export function mergeReviewBatches(responses,expectedBatches,expectedRegions){
   report.summary=decisive.report.summary;
   report.decision_reason=complete?`${reviewedRegions} detail regions reviewed across ${expectedBatches} batch${expectedBatches===1?'':'es'}. ${decisive.report.decision_reason}`:`Review incomplete: ${responses.length} of ${expectedBatches} batches and ${reviewedRegions} of ${expectedRegions} detail regions completed. ${confirmedFailure?decisive.report.decision_reason:'Complete the remaining reviews before passing this pair.'}`;
   report.status=status;
-  return {report,model:distinct(responses.map(r=>r.model)).join(', '),generatedAt:responses.at(-1).generatedAt,detailCount:reviewedRegions,coverage:{complete,reviewedRegions,expectedRegions,reviewedBatches:responses.length,expectedBatches},batchReports:responses};
+  return {report,cost:sumReviewCosts(responses.map(r=>r.cost)),model:distinct(responses.map(r=>r.model)).join(', '),generatedAt:responses.at(-1).generatedAt,detailCount:reviewedRegions,coverage:{complete,reviewedRegions,expectedRegions,reviewedBatches:responses.length,expectedBatches},batchReports:responses};
 }

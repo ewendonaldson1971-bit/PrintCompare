@@ -4,6 +4,7 @@ import { pairStatus, overallStatus, STATUS_LABELS, ACCEPTANCE_RULES } from './as
 import { openLocalPdf, renderPdfPage, renderPdfRegion } from './pdf-source.js';
 import { combineDetailRegions, encodeReviewImages } from './detail-regions.js';
 import { planDetailBatches, mergeReviewBatches } from './review-batches.js';
+import { sumReviewCosts, costLabel, COST_NOTE } from './review-cost.js';
 pdfjs.GlobalWorkerOptions.workerSrc = './vendor/pdf.worker.mjs';
 const $ = id => document.getElementById(id);
 const state={pdf:null,pdfFile:null,proofs:[],results:[],active:0,mode:'side',busy:false,pdfLoading:false,proofLoading:0,pdfRevision:0,preset:'balanced',runPreset:'balanced',aiConfigured:null,aiRunning:false,stopAi:false,aiController:null};
@@ -21,6 +22,7 @@ function removeProofs(removed){
 }
 const aiSection=text('section','','ai-report');aiSection.id='ai-report';aiSection.setAttribute('aria-label','AI artwork report');$('findings').before(aiSection);
 const overallBanner=text('div','','decision-banner');overallBanner.id='overall-status';overallBanner.setAttribute('role','status');$('result-summary').before(overallBanner);
+const jobCost=text('p','','ai-report-meta');overallBanner.after(jobCost);
 function invalidate(){state.results=[];$('results').hidden=true;update();}
 async function releasePdf(pdf){if(pdf)try{await pdf.loadingTask.destroy();}catch{/* A disposed loading task needs no further cleanup. */}}
 function update(){
@@ -288,6 +290,8 @@ $('compare').onclick=async()=>{
   }finally{for(const result of state.results)result.aiPending=false;state.busy=false;state.aiRunning=false;update();renderPairing();if(state.results.length)renderResults();}
 };
 function renderResults(){
+  const reviewed=state.results.filter(r=>r.ai);
+  jobCost.textContent=reviewed.length?`Current job · ${costLabel(sumReviewCosts(reviewed.map(r=>r.ai.cost)))}. ${COST_NOTE}`:'';
   const valid=state.results.filter(r=>!r.error),status=overallStatus(state.results);
   overallBanner.className=`decision-banner overall-decision ${status}`;overallBanner.replaceChildren(text('strong',`Overall ${STATUS_LABELS[status]}`,'status-badge'),text('p',status==='assessing'?'Artwork assessment is in progress. Reviewing the proof pairs and lettering details.':status==='pass'?'All proof pairs pass the artwork acceptance rules.':status==='fail'?'At least one proof has a failing artwork change. Check the failed pairs below.':'One or more proof pairs have not been assessed reliably. Complete the AI reviews to obtain a Pass/Fail result.'));
   const summary=$('result-summary');summary.replaceChildren();
@@ -334,6 +338,8 @@ function download(blob,name){const url=URL.createObjectURL(blob),a=document.crea
 $('download-report').onclick=()=>{
   const lines=['PRINT COMPARE — ARTWORK & PIXEL COMPARISON REPORT',`Created: ${new Date().toLocaleString()}`,`Print PDF: ${state.pdfFile.name}`,`Pixel sensitivity: ${state.runPreset}`,'','AI observations can be mistaken. Verify reported changes against the artwork. This report is not a prepress or colour-accuracy certification.',''];
   lines.push(`OVERALL STATUS: ${STATUS_LABELS[overallStatus(state.results)]}`,ACCEPTANCE_RULES,'');
+  const reviewed=state.results.filter(r=>r.ai);
+  if(reviewed.length)lines.push(`CURRENT JOB · ${costLabel(sumReviewCosts(reviewed.map(r=>r.ai.cost)))}`,COST_NOTE,'');
   for(const r of state.results){lines.push(`REFERENCE: ${r.name}`,`PDF page: ${r.page}`);if(r.error){lines.push('STATUS: NOT ASSESSED',r.error,'');continue;}
     lines.push(...reportLines(r),'LOCAL PIXEL CHECK',`Comparison resolution: ${r.width} x ${r.height}`,`Reference resolution: ${r.proofWidth} x ${r.proofHeight}`,`Flagged pixels: ${r.changed} of ${r.compared} (${r.percent.toFixed(4)}%)`,`Regions: ${r.regions.length}`,`Aspect ratio mismatch: ${r.ratioMismatch?'YES — review pairing/crop':'No'}`,`Alignment translation: x=${-r.shiftX}px, y=${-r.shiftY}px`, 'Region coordinates below use the comparison resolution, with origin at top left.');
     r.regions.forEach((region,i)=>lines.push(`  ${i+1}. x=${region.x}, y=${region.y}, width=${region.width}, height=${region.height}, flagged pixels=${region.pixels}`));lines.push('');

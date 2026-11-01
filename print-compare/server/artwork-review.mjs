@@ -1,4 +1,5 @@
 import { reportStatus } from '../dist/assessment.js';
+import { estimateReviewCost } from '../dist/review-cost.js';
 import {resolveAiConnection,fetchAiResponse} from './ai-connection.mjs';
 export const MAX_BODY_BYTES = 4_500_000;
 const string = { type: 'string' };
@@ -160,7 +161,8 @@ export async function handleReview(request, { env = process.env, fetchImpl = fet
       report.decision_reason+=' Not all detected lettering regions were included in the detail review.';
     }
     if(report.assessment.lettering==='uncertain'&&report.assessment.content==='intact')report.assessment.content='uncertain';
-    return json({ report: { ...report, status: reportStatus(report) }, model, detailCount:details.length, detailBatch:{index:detailBatch.index,total:detailBatch.total,expectedRegions:detailBatch.expectedRegions}, generatedAt: new Date().toISOString() });
+    const usedModel = payload.model || model;
+    return json({ report: { ...report, status: reportStatus(report) }, model: usedModel, cost: estimateReviewCost(usedModel, payload.usage), detailCount:details.length, detailBatch:{index:detailBatch.index,total:detailBatch.total,expectedRegions:detailBatch.expectedRegions}, generatedAt: new Date().toISOString() });
   } catch (error) {
     if (error.name === 'TimeoutError' || error.name === 'AbortError') return fail('AI review took too long. Please try this pair again.', 'timeout', 504);
     return fail('AI review is temporarily unavailable. Please try again; your local comparison is still available.', 'upstream_error', 502);

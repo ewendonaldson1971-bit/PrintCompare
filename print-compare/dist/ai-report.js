@@ -1,4 +1,5 @@
 import { pairStatus, STATUS_LABELS, ACCEPTANCE_RULES } from './assessment.js';
+import { costLabel, COST_NOTE } from './review-cost.js';
 export const VERDICTS = {
   differences_found: 'Artwork differences found',
   no_significant_difference: 'No significant artwork differences found',
@@ -9,6 +10,7 @@ export function reportLines(result) {
   lines.push(`STATUS: ${STATUS_LABELS[pairStatus(result)]}`,ACCEPTANCE_RULES);
   if (!result.ai) return [...lines, result.aiError || 'AI review has not been generated for this pair.', ''];
   const {report,model,generatedAt}=result.ai;
+  lines.push(costLabel(result.ai.cost), COST_NOTE);
   lines.push(`Decision: ${report.decision_reason}`,VERDICTS[report.verdict],report.summary,`Model: ${model}`,`Generated: ${generatedAt}`,'');
   lines.push(`Reference source: ${result.referenceType==='pdf'?`PDF page ${result.referencePage}`:'JPEG'}`);
   lines.push(`Lettering detail pairs reviewed: ${result.ai.detailCount??0}`);
@@ -20,7 +22,7 @@ export function reportLines(result) {
   }
   if(result.ai.batchReports?.length>1){
     lines.push('DETAIL BATCH RECORDS');
-    for(const batch of result.ai.batchReports)lines.push(`Batch ${batch.detailBatch.index}/${batch.detailBatch.total}: ${batch.detailCount} regions`,batch.report.decision_reason,batch.report.summary,'');
+    for(const batch of result.ai.batchReports)lines.push(`Batch ${batch.detailBatch.index}/${batch.detailBatch.total}: ${batch.detailCount} regions`,costLabel(batch.cost),batch.report.decision_reason,batch.report.summary,'');
   }
   return lines;
 }
@@ -38,6 +40,7 @@ export function renderAiReport(container,result,{busy=false,onGenerate}={}) {
   if(result.aiPending){const p=el('p','Reviewing logos, lettering, colours, imagery and layout…','ai-report-status');p.setAttribute('role','status');container.append(p);return;}
   if(!result.ai){container.append(el('p',result.error?'This pair could not be rendered. Fix the page pairing or files before requesting an AI report.':result.aiError||'Generate a plain-language comparison of the artwork. This sends image previews of the reference and print PDF page through Netlify to OpenAI.','ai-report-status'));return;}
   const {report}=result.ai;
+  container.append(el('p',costLabel(result.ai.cost),'ai-cost'),el('p',COST_NOTE,'ai-report-meta'));
   container.append(el('strong',VERDICTS[report.verdict],`ai-verdict ${report.verdict}`),el('p',report.summary,'ai-summary'));
   container.append(el('p',ACCEPTANCE_RULES,'acceptance-rules'));
   if(result.ai.coverage)container.append(el('p',`${result.ai.coverage.reviewedRegions} of ${result.ai.coverage.expectedRegions} detail regions reviewed · ${result.ai.coverage.reviewedBatches} of ${result.ai.coverage.expectedBatches} batches complete`,'ai-report-meta'));
