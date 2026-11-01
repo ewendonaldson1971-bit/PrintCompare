@@ -1,7 +1,8 @@
 import * as pdfjs from './vendor/pdf.mjs';
 import { renderAiReport, reportLines } from './ai-report.js';
 import { pairStatus, overallStatus, STATUS_LABELS, ACCEPTANCE_RULES } from './assessment.js';
-import { openLocalPdf, renderPdfPage } from './pdf-source.js';
+import { openLocalPdf, renderPdfPage, renderPdfRegion } from './pdf-source.js';
+import { combineDetailRegions, encodeReviewImages } from './detail-regions.js';
 pdfjs.GlobalWorkerOptions.workerSrc = './vendor/pdf.worker.mjs';
 const $ = id => document.getElementById(id);
 const state={pdf:null,pdfFile:null,proofs:[],results:[],active:0,mode:'side',busy:false,pdfLoading:false,proofLoading:0,pdfRevision:0,preset:'balanced',runPreset:'balanced',aiConfigured:null,aiRunning:false,stopAi:false,aiController:null};
@@ -45,25 +46,50 @@ async function checkAiConfiguration(){
 }
 $('ai-refresh').onclick=checkAiConfiguration;
 $('stop-ai').onclick=()=>{state.stopAi=true;state.aiController?.abort();$('stop-ai').disabled=true;};
+function inspectionLength(width,height){const ratio=Math.max(width,height)/Math.min(width,height);return Math.min(9000,Math.round(Math.sqrt(10_000_000*ratio)));}
+async function locateLettering(source){
+  const width=source.width,height=source.height,pixels=source.getContext('2d',{willReadFrequently:true}).getImageData(0,0,width,height).data;
+  source.width=source.height=1;
+  return new Promise((resolve,reject)=>{
+    const worker=new Worker('./detail-worker.js',{type:'module'});
+    worker.onmessage=event=>{worker.terminate();event.data.error?reject(new Error(event.data.error)):resolve(event.data.regions);};
+    worker.onerror=()=>{worker.terminate();reject(new Error('Could not inspect small lettering. Please retry this pair.'));};
+    worker.postMessage({pixels,width,height},[pixels.buffer]);
+  });
+}
+async function renderReferenceRegion(proof,region,longest){
+  if(proof.kind==='pdf')return renderPdfRegion(proof.pdf,proof.referencePage,region,longest,canvas,{cleanup:false});
+  const img=new Image();img.src=proof.url;await img.decode();
+  const w=proof.width*region.width,h=proof.height*region.height,scale=Math.min(1,longest/Math.max(w,h)),out=canvas(Math.max(1,Math.round(w*scale)),Math.max(1,Math.round(h*scale)));
+  out.getContext('2d').drawImage(img,proof.width*region.x,proof.height*region.y,w,h,0,0,out.width,out.height);return out;
+}
 async function prepareAiImages(result){
   const proof=state.proofs.find(p=>p.id===result.proofId);
   if(!proof)throw new Error('The reference is no longer available. Compare the files again.');
   const page=await state.pdf.getPage(result.page),base=page.getViewport({scale:1});
+  const referencePage=proof.kind==='pdf'?await proof.pdf.getPage(proof.referencePage):null;
   try{
     // Render the PDF separately at higher resolution; do not upsample the low-resolution proof.
     const viewport=page.getViewport({scale:2000/Math.max(base.width,base.height)});
     const print=canvas(Math.max(1,Math.round(viewport.width)),Math.max(1,Math.round(viewport.height)));
     await page.render({canvasContext:print.getContext('2d'),viewport,background:'white'}).promise;
-    const reference=await renderProofSource(proof,2000);
-    for(const quality of [.92,.82,.68,.5]){
-      const referenceImage=reference.toDataURL('image/jpeg',quality),printImage=print.toDataURL('image/jpeg',quality);
-      if(referenceImage.length+printImage.length<4_300_000)return {referenceImage,printImage};
+    const reference=referencePage?await renderPdfPage(proof.pdf,proof.referencePage,2000,canvas,{cleanup:false}):await renderProofSource(proof,2000);
+    message(`Inspecting small lettering: ${result.name}`);
+    const printAnalysis=await renderPdfPage(state.pdf,result.page,inspectionLength(base.width,base.height),canvas,{cleanup:false});
+    const printRegions=await locateLettering(printAnalysis);
+    const referenceAnalysis=referencePage?await renderPdfPage(proof.pdf,proof.referencePage,inspectionLength(reference.width,reference.height),canvas,{cleanup:false}):await renderProofSource(proof,inspectionLength(reference.width,reference.height));
+    const referenceRegions=await locateLettering(referenceAnalysis);
+    const selection=combineDetailRegions(referenceRegions,printRegions),detailCanvases=[];
+    for(const region of selection.regions){
+      if(state.stopAi)throw new DOMException('Review stopped.','AbortError');
+      const crop={x:region.x,y:region.y,width:region.width,height:region.height};
+      detailCanvases.push({region:crop,reference:await renderReferenceRegion(proof,crop,1800),print:await renderPdfRegion(state.pdf,result.page,crop,1800,canvas,{cleanup:false})});
     }
-    throw new Error('This artwork creates an oversized AI preview. Try a smaller reference.');
-  }finally{page.cleanup();}
+    const payload=encodeReviewImages(reference,print,detailCanvases,selection.complete);result.detailPreviews=payload.detailPairs;return payload;
+  }finally{page.cleanup();referencePage?.cleanup();}
 }
 async function generateAiForResult(result){
-  result.aiPending=true;result.aiError=null;result.ai=null;renderResults();
+  result.aiPending=true;result.aiError=null;result.ai=null;result.detailPreviews=[];renderResults();
   const controller=new AbortController();state.aiController=controller;
   try{
     const images=await prepareAiImages(result);

@@ -7,7 +7,7 @@ import { reportLines } from '../dist/ai-report.js';
 // A small JPEG with a valid signature; the upstream response is deliberately mocked.
 const image = 'data:image/jpeg;base64,' + Buffer.concat([Buffer.from([255,216,255]),Buffer.alloc(90)]).toString('base64');
 const body = {referenceImage:image,printImage:image,page:1,referenceName:'reference.jpg',pdfName:'print.pdf'};
-const report = {verdict:'differences_found',summary:'The lower black bar is absent in the reference.',decision_reason:'The print contains a material extra artwork element.',assessment:{logos:'intact',colour:'acceptable',size:'acceptable',content:'significant_change'},differences:[{area:'Lower bar',reference:'Absent',print:'Black horizontal bar',severity:'high',confidence:'high'}],shared_elements:['Green rectangle'],checks:['Confirm the lower bar is intended.'],limitations:['Screen-based screening, not a print proof.']};
+const report = {verdict:'differences_found',summary:'The lower black bar is absent in the reference.',decision_reason:'The print contains a material extra artwork element.',assessment:{logos:'intact',lettering:'intact',colour:'acceptable',size:'acceptable',content:'significant_change'},differences:[{area:'Lower bar',reference:'Absent',print:'Black horizontal bar',severity:'high',confidence:'high'}],shared_elements:['Green rectangle'],checks:['Confirm the lower bar is intended.'],limitations:['Screen-based screening, not a print proof.']};
 const env = {OPENAI_API_KEY:'test-key-never-used-for-network'};
 const request = (data=body, headers={}) => new Request('https://print.example/.netlify/functions/artwork-review',{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify(data)});
 const ok = data => new Response(JSON.stringify({status:'completed',output:[{type:'message',content:[{type:'output_text',text:JSON.stringify(data)}]}]}),{status:200});
@@ -68,10 +68,33 @@ test('download includes labelled artwork observations and reports unavailable re
   assert.match(reportLines({aiError:'Not configured'}).join('\n'),/Not configured/);
 });
 test('a passing report may document acceptable size or colour differences without being rejected',async()=>{
-  const accepted={...report,verdict:'no_significant_difference',assessment:{logos:'intact',colour:'acceptable',size:'acceptable',content:'intact'},decision_reason:'Only a slight uniform size change is visible.',differences:[{area:'Artwork scale',reference:'Slightly larger',print:'Slightly smaller, all content intact',severity:'low',confidence:'high'}]};
+  const accepted={...report,verdict:'no_significant_difference',assessment:{logos:'intact',lettering:'intact',colour:'acceptable',size:'acceptable',content:'intact'},decision_reason:'Only a slight uniform size change is visible.',differences:[{area:'Artwork scale',reference:'Slightly larger',print:'Slightly smaller, all content intact',severity:'low',confidence:'high'}]};
   assert.equal(validReport(accepted),true);
   const response=await handleReview(request(),{env,fetchImpl:async()=>ok(accepted)});
   assert.equal(response.status,200);assert.equal((await response.json()).report.status,'pass');
+});
+test('detail images are labelled reference then print and reach the model at high detail',async()=>{
+  let content;
+  const detailPairs=[{region:{x:.5,y:.8,width:.2,height:.1},referenceImage:image,printImage:image}];
+  const response=await handleReview(request({...body,detailPairs}),{env,fetchImpl:async(url,options)=>{content=JSON.parse(options.body).input[0].content;return ok(report);}});
+  assert.equal(response.status,200);assert.equal((await response.json()).detailCount,1);assert.match(content[4].text,/First image: REFERENCE. Second image: PRINT/);assert.equal(content[5].detail,'high');assert.equal(content[6].detail,'high');
+  const bad=await handleReview(request({...body,detailPairs:[{...detailPairs[0],referenceImage:'https://internal/private'}]}),{env,fetchImpl:()=>assert.fail('must reject non-data detail images')});assert.equal(bad.status,400);
+});
+test('lossless PNG lettering crops are accepted, while invalid crop coordinates are rejected',async()=>{
+  const {createCanvas}=await import('@napi-rs/canvas');const crop=createCanvas(40,40).toDataURL('image/png');
+  const detail={region:{x:.1,y:.8,width:.3,height:.1},referenceImage:crop,printImage:crop};
+  const good=await handleReview(request({...body,detailPairs:[detail]}),{env,fetchImpl:async()=>ok(report)});assert.equal(good.status,200);
+  const bad=await handleReview(request({...body,detailPairs:[{...detail,region:{...detail.region,x:1}}]}),{env,fetchImpl:()=>assert.fail('must reject an out-of-page region')});assert.equal(bad.status,400);
+});
+test('incomplete detail coverage cannot produce a pass, but a confirmed failure still fails',async()=>{
+  const accepted={...report,verdict:'no_significant_difference',differences:[],assessment:{logos:'intact',lettering:'intact',colour:'acceptable',size:'acceptable',content:'intact'}};
+  const response=await handleReview(request({...body,detailCoverageComplete:false}),{env,fetchImpl:async()=>ok(accepted)});
+  const result=await response.json();assert.equal(result.report.status,'not_assessed');assert.equal(result.report.assessment.lettering,'uncertain');assert.equal(result.report.assessment.content,'uncertain');
+  const failed=await handleReview(request({...body,detailCoverageComplete:false}),{env,fetchImpl:async()=>ok({...report,assessment:{...report.assessment,lettering:'filled_or_damaged'}})});assert.equal((await failed.json()).report.status,'fail');
+});
+test('letter-counter failure is also returned as damaged content for already-open older clients',async()=>{
+  const response=await handleReview(request(),{env,fetchImpl:async()=>ok({...report,assessment:{...report.assessment,content:'intact',lettering:'filled_or_damaged'}})});
+  const result=await response.json();assert.equal(result.report.status,'fail');assert.equal(result.report.assessment.content,'significant_change');
 });
 test('published browser assets contain no server key references and describe AI sharing',async()=>{
   const html=await readFile('dist/index.html','utf8');assert.match(html,/through Netlify to OpenAI/);assert.doesNotMatch(html,/Your artwork never leaves this device/);

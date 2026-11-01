@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import {createCanvas} from '@napi-rs/canvas';
-import {openLocalPdf,renderPdfPage} from '../dist/pdf-source.js';
+import {openLocalPdf,renderPdfPage,renderPdfRegion} from '../dist/pdf-source.js';
 import {compareImages} from '../dist/compare.js';
 
 function twoPagePdf(padding=0){
@@ -24,6 +24,10 @@ test('local PDF loading reads file slices rather than the entire file and suppor
     const a=first.getContext('2d').getImageData(0,0,200,250).data,b=second.getContext('2d').getImageData(0,0,200,250).data;
     assert.equal(compareImages(a,a,200,250).changed,0);
     assert.ok(compareImages(a,b,200,250).percent>5,'different PDF reference pages must produce different comparisons');
+    const crop=await renderPdfRegion(reference,2,{x:.2,y:.44,width:.4,height:.36},200,createCanvas);
+    assert.ok(crop.width<=200&&crop.height<=200);
+    const centre=crop.getContext('2d').getImageData(Math.floor(crop.width/2),Math.floor(crop.height/2),1,1).data;assert.ok(centre[0]>150&&centre[1]<30,'detail rendering must sample the selected source region');
+    await assert.rejects(()=>renderPdfRegion(reference,1,{x:1,y:0,width:1,height:1},200,createCanvas));
     assert.ok(reads.length>1);assert.ok(reads.every(([start,end])=>end-start<file.size),'no single read should eagerly consume the complete PDF');
   }finally{await reference.loadingTask.destroy();}
 });

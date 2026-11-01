@@ -11,6 +11,7 @@ export function reportLines(result) {
   const {report,model,generatedAt}=result.ai;
   lines.push(`Decision: ${report.decision_reason}`,VERDICTS[report.verdict],report.summary,`Model: ${model}`,`Generated: ${generatedAt}`,'');
   lines.push(`Reference source: ${result.referenceType==='pdf'?`PDF page ${result.referencePage}`:'JPEG'}`);
+  lines.push(`Lettering detail pairs reviewed: ${result.ai.detailCount??0}`);
   for (const d of report.differences) lines.push(`${d.area} — ${d.severity} priority; ${d.confidence} confidence`,`  Reference input: ${d.reference}`,`  Print PDF: ${d.print}`,'');
   for(const [title,items] of [['PRESENT IN BOTH',report.shared_elements],['CHECK BEFORE PRINTING',report.checks],['REVIEW LIMITATIONS',report.limitations]]){
     if(items.length) lines.push(title,...items.map(item=>`- ${item}`),'');
@@ -33,6 +34,15 @@ export function renderAiReport(container,result,{busy=false,onGenerate}={}) {
   const {report}=result.ai;
   container.append(el('strong',VERDICTS[report.verdict],`ai-verdict ${report.verdict}`),el('p',report.summary,'ai-summary'));
   container.append(el('p',ACCEPTANCE_RULES,'acceptance-rules'));
+  if(result.detailPreviews?.length){
+    const details=document.createElement('details');details.className='lettering-details';details.append(el('summary',`Lettering close-ups (${result.detailPreviews.length} regions)`));
+    for(const [i,d]of result.detailPreviews.entries()){
+      const group=el('div','','lettering-pair');group.append(el('p',`Detail ${i+1} · ${Math.round(d.region.x*100)}% from left, ${Math.round(d.region.y*100)}% from top`));
+      const pair=el('div','','lettering-images');
+      for(const [label,src]of [['Reference',d.referenceImage],['Print PDF',d.printImage]]){const figure=document.createElement('figure'),img=document.createElement('img');img.src=src;img.alt=`${label} lettering close-up ${i+1}`;figure.append(el('figcaption',label),img);pair.append(figure);}group.append(pair);details.append(group);
+    }
+    container.append(details);
+  }
   if(report.differences.length){
     const wrap=el('div','','ai-table-wrap'),table=el('table','','ai-table'),thead=document.createElement('thead'),head=document.createElement('tr');
     for(const label of ['Area',result.referenceType==='pdf'?`Reference PDF · page ${result.referencePage}`:'JPEG reference','Print PDF']){const th=el('th',label);th.scope='col';head.append(th);}thead.append(head);table.append(thead);

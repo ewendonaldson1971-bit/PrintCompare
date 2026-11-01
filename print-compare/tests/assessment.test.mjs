@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {reportStatus,pairStatus,overallStatus} from '../dist/assessment.js';
 import {reportLines} from '../dist/ai-report.js';
-const acceptable={logos:'intact',colour:'acceptable',size:'acceptable',content:'intact'};
+const acceptable={logos:'intact',lettering:'intact',colour:'acceptable',size:'acceptable',content:'intact'};
 const report=assessment=>({verdict:'differences_found',assessment,decision_reason:'Assessed under artwork acceptance rules.',summary:'Visual check.',differences:[],shared_elements:[],checks:[],limitations:[]});
 const result=assessment=>({ai:{report:report(assessment),model:'test',generatedAt:'2026-10-31'}});
 test('acceptable size and colour-conversion changes pass even when pixels differ',()=>{
@@ -12,6 +12,11 @@ test('acceptable size and colour-conversion changes pass even when pixels differ
 test('a dropped logo or a significant colour change independently fails',()=>{
   assert.equal(reportStatus(report({...acceptable,logos:'missing_or_damaged'})),'fail');
   assert.equal(reportStatus(report({...acceptable,colour:'significant_change'})),'fail');
+});
+test('filled-in letter counters fail even when wording, colour and size otherwise match',()=>{
+  assert.equal(reportStatus(report({...acceptable,lettering:'filled_or_damaged'})),'fail');
+  assert.equal(reportStatus(report({...acceptable,lettering:'uncertain'})),'not_assessed');
+  const oldReport=report({...acceptable});delete oldReport.assessment.lettering;assert.equal(reportStatus(oldReport),'not_assessed');
 });
 test('uncertainty or missing AI review never produces a pass',()=>{
   assert.equal(pairStatus({percent:0,regions:[]}),'not_assessed');
