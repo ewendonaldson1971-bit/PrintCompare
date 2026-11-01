@@ -47,6 +47,10 @@ The client verifies batch indexes, expected region counts, and completed respons
 
 Every pair shows PASS or FAIL once assessed, with a reason. A missing, failed, stopped, or inconclusive AI review shows NOT ASSESSED rather than an unearned pass. One failed pair fails the overall job; an overall pass requires every pair to pass. Decisions and acceptance criteria are included in the downloaded report.
 
+## Review progress
+
+During comparisons a sticky progress panel tracks local proof rendering and AI batches, including single-proof regeneration. The percentage weights local preparation at 20% and AI review at 80% when both are enabled; AI-only runs use the whole bar. Remaining time is estimated from observed progress in the current run after a completed AI batch (or local proof for pixel-only runs). Detail counts and request speeds vary, so the estimate can change. Stops and failures retain partial progress; 100% means processing completed, regardless of the artwork's Pass/Fail verdict.
+
 ## Review cost estimates
 
 Each current AI report and the current job total display estimated AI cost in AUD, including returned detail-batch requests. The fixed exchange rate is US$0.70 = A$1.00 (USD cost divided by 0.70). Estimates use returned token usage and standard GPT-4.1 rates verified on 2026-11-01: US$2 input, US$0.50 cached input, US$8 output per million tokens. The actual response model is used; unsupported models or absent/invalid usage show unavailable, and partially priced totals are labelled partial. Values are summed before display rounding. Downloaded reports include the estimate, exchange rate and batch costs. These are current-report estimates, not billing records: hosting, taxes, previous regenerated reports and requests without returned usage are excluded. Rates live in `print-compare/dist/review-cost.js`; update them when provider pricing changes. [OpenAI model pricing](https://developers.openai.com/api/docs/models/gpt-4.1).

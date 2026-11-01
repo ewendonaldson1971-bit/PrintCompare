@@ -5,6 +5,7 @@ import { openLocalPdf, renderPdfPage, renderPdfRegion } from './pdf-source.js';
 import { combineDetailRegions, encodeReviewImages } from './detail-regions.js';
 import { planDetailBatches, mergeReviewBatches } from './review-batches.js';
 import { sumReviewCosts, costLabel, COST_NOTE } from './review-cost.js';
+import { ReviewProgress, durationLabel } from './review-progress.js';
 pdfjs.GlobalWorkerOptions.workerSrc = './vendor/pdf.worker.mjs';
 const $ = id => document.getElementById(id);
 const state={pdf:null,pdfFile:null,proofs:[],results:[],active:0,mode:'side',busy:false,pdfLoading:false,proofLoading:0,pdfRevision:0,preset:'balanced',runPreset:'balanced',aiConfigured:null,aiRunning:false,stopAi:false,aiController:null};
@@ -23,7 +24,21 @@ function removeProofs(removed){
 const aiSection=text('section','','ai-report');aiSection.id='ai-report';aiSection.setAttribute('aria-label','AI artwork report');$('findings').before(aiSection);
 const overallBanner=text('div','','decision-banner');overallBanner.id='overall-status';overallBanner.setAttribute('role','status');$('result-summary').before(overallBanner);
 const jobCost=text('p','','ai-report-meta');overallBanner.after(jobCost);
-function invalidate(){state.results=[];$('results').hidden=true;update();}
+const progressBox=text('section','','review-progress');progressBox.hidden=true;progressBox.setAttribute('aria-label','Comparison progress');
+const progressHeading=text('div','','progress-heading'),progressTitle=text('strong',''),progressPercent=text('span','');progressTitle.setAttribute('role','status');
+progressHeading.append(progressTitle,progressPercent);
+const progressBar=document.createElement('progress');progressBar.max=1;progressBar.setAttribute('aria-label','Estimated comparison progress');
+const progressTime=text('p','','progress-time'),progressNote=text('small','Time is estimated from this run and may change as lettering details are detected.');
+progressBox.append(progressHeading,progressBar,progressTime,progressNote);$('message').before(progressBox);
+let reviewProgress=null,progressTimer=null;
+function drawProgress(){
+  if(!reviewProgress)return;
+  const {fraction,remaining}=reviewProgress.snapshot();progressBar.value=fraction;progressPercent.textContent=`${Math.floor(fraction*100)}%`;
+  progressTime.textContent=reviewProgress.ended?(reviewProgress.complete?'Review complete.':'Review incomplete. Completed results remain available.'):`Elapsed ${durationLabel((Date.now()-reviewProgress.started)/1000)} · ${remaining===null?'Estimating time remaining…':remaining===0?'Taking longer than estimated; still working…':`About ${durationLabel(remaining)} remaining`}`;
+}
+function startProgress(localTotal,aiTotal){clearInterval(progressTimer);reviewProgress=new ReviewProgress(localTotal,aiTotal);progressBox.hidden=false;progressTitle.textContent=localTotal?'Comparing files…':'Preparing AI assessment…';drawProgress();progressTimer=setInterval(drawProgress,1000);}
+function endProgress(complete){if(!reviewProgress)return;reviewProgress.finish(complete);clearInterval(progressTimer);progressTitle.textContent=complete?'Comparison complete':state.stopAi?'Assessment stopped':'Comparison incomplete';drawProgress();}
+function invalidate(){state.results=[];$('results').hidden=true;progressBox.hidden=true;clearInterval(progressTimer);reviewProgress=null;update();}
 async function releasePdf(pdf){if(pdf)try{await pdf.loadingTask.destroy();}catch{/* A disposed loading task needs no further cleanup. */}}
 function update(){
   const ready=!!state.pdf&&state.proofs.length>0&&!state.pdfLoading&&!state.proofLoading;
@@ -84,6 +99,7 @@ async function* prepareAiBatches(result){
     const referenceRegions=await locateLettering(referenceAnalysis);
     const selection=combineDetailRegions(referenceRegions,printRegions),batches=planDetailBatches(selection.regions);
     result.reviewPlan={batches:batches.length,regions:selection.regions.length};
+    reviewProgress?.planBatches(batches.length);drawProgress();
     for(const [index,regions]of batches.entries()){
       const detailCanvases=[];
       for(const [regionIndex,region]of regions.entries()){
@@ -98,19 +114,23 @@ async function* prepareAiBatches(result){
   }finally{page.cleanup();referencePage?.cleanup();}
 }
 async function generateAiForResult(result){
+  progressTitle.textContent=`Assessing proof ${reviewProgress.aiDone+1} of ${reviewProgress.aiTotal} · inspecting lettering…`;
   result.aiPending=true;result.aiError=null;result.ai=null;result.detailPreviews=[];result.reviewPlan=null;renderResults();
   const controller=new AbortController(),responses=[];state.aiController=controller;
   try{
     for await(const images of prepareAiBatches(result)){
       if(state.stopAi)throw new DOMException('Review stopped.','AbortError');
       message(`Reviewing lettering batch ${images.detailBatch.index} of ${images.detailBatch.total}: ${result.name}`);
+      progressTitle.textContent=`Assessing proof ${reviewProgress.aiDone+1} of ${reviewProgress.aiTotal} · batch ${images.detailBatch.index} of ${images.detailBatch.total}`;drawProgress();
       const response=await fetch('/.netlify/functions/artwork-review',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...images,referenceName:result.name,referenceType:result.referenceType,referencePage:result.referencePage,pdfName:state.pdfFile.name,page:result.page,referenceDimensions:`${result.proofWidth} × ${result.proofHeight} pixels${result.referenceType==='pdf'?' (rendered PDF reference page)':''}`}),signal:AbortSignal.any([controller.signal,AbortSignal.timeout(65000)])});
       let payload;try{payload=await response.json();}catch{throw new Error(response.status===429?'AI request limit reached. Please try again later.':'The AI service returned an unreadable response. Please try again.');}
       if(!response.ok)throw new Error(payload.error||'AI review could not be completed. Please retry.');
       if(!payload.report)throw new Error('The AI report was incomplete. Please retry.');
       responses.push(payload);
+      reviewProgress?.finishBatch();drawProgress();
     }
     result.ai=mergeReviewBatches(responses,result.reviewPlan.batches,result.reviewPlan.regions);
+    reviewProgress?.finishPair();drawProgress();
   }catch(error){
     result.aiError=error.name==='AbortError'?'AI review was stopped before all batches completed.':error.name==='TimeoutError'?'AI review took too long. Please try this pair again.':error.message;
     if(responses.length)result.ai=mergeReviewBatches(responses,result.reviewPlan.batches,result.reviewPlan.regions);
@@ -123,11 +143,12 @@ function renderCurrentAi(){
 }
 async function runSingleAi(result){
   if(state.busy||result.error)return;
+  startProgress(0,1);reviewProgress.beginAi(1);
   state.busy=true;state.aiRunning=true;state.stopAi=false;result.aiPending=true;result.ai=null;result.aiError=null;$('stop-ai').disabled=false;update();renderPairing();renderResults();
   try{
     if(!await checkAiConfiguration()){result.aiError=state.aiConfigured===false?'AI reporting needs the server API key. Add OPENAI_API_KEY in Netlify with Functions scope and redeploy, then click Generate AI report.':'The AI service is unavailable. Please try again later.';renderCurrentAi();return;}
     message(`AI reviewing page ${result.page}: ${result.name}`);await generateAiForResult(result);
-  }finally{result.aiPending=false;state.busy=false;state.aiRunning=false;update();renderPairing();renderResults();message('');}
+  }finally{endProgress(!!result.ai?.coverage?.complete&&!result.aiError);result.aiPending=false;state.busy=false;state.aiRunning=false;update();renderPairing();renderResults();message('');}
 }
 function fileRow(name,detail,remove){const row=text('div','','file-row');row.append(text('span',name),text('small',detail));const button=text('button','×');button.type='button';button.setAttribute('aria-label',`Remove ${name}`);button.onclick=()=>{if(!state.busy)remove();};row.append(button);return row;}
 function renderFiles(){
@@ -243,11 +264,13 @@ function analyse(a,b,width,height,preset){return new Promise((resolve,reject)=>{
 });}
 $('compare').onclick=async()=>{
   if(state.busy||!state.pdf||!state.proofs.length)return;
+  startProgress(state.proofs.length,$('ai-enabled').checked?state.proofs.length:0);
   state.busy=true;state.results=[];state.runPreset=state.preset;update();renderPairing();$('results').hidden=true;
   const results=[];
   try{
     for(let index=0;index<state.proofs.length;index++){
       const proof=state.proofs[index];message(`Comparing proof ${index+1} of ${state.proofs.length}: ${proofLabel(proof)}`);
+      progressTitle.textContent=`Comparing proof ${index+1} of ${state.proofs.length}`;
       await new Promise(r=>requestAnimationFrame(r));
       try{
         const page=await state.pdf.getPage(proof.page),base=page.getViewport({scale:1});
@@ -267,13 +290,16 @@ $('compare').onclick=async()=>{
         results.push({...result,proofId:proof.id,name:proofLabel(proof),referenceType:proof.kind,referencePage:proof.referencePage||null,page:proof.page,width,height,proofWidth:proof.width||referenceSource.width,proofHeight:proof.height||referenceSource.height,ratioMismatch,print,reference,difference});
         page.cleanup();
       }catch(error){results.push({name:proofLabel(proof),referenceType:proof.kind,referencePage:proof.referencePage||null,page:proof.page,error:`Unable to compare this pair: ${error.message}`});}
+      reviewProgress.finishLocal();drawProgress();
     }
     state.results=results;state.active=0;if($('ai-enabled').checked)for(const result of results)if(!result.error)result.aiPending=true;renderResults();message('');$('results').hidden=false;$('results').scrollIntoView({behavior:'smooth',block:'start'});
     if($('ai-enabled').checked){
+      progressTitle.textContent='Connecting to AI assessment…';
       const available=await checkAiConfiguration();
       if(available){
         state.aiRunning=true;state.stopAi=false;$('stop-ai').disabled=false;update();
         const pairs=results.filter(r=>!r.error);
+        reviewProgress.beginAi(pairs.length);drawProgress();
         for(let i=0;i<pairs.length;i++){
           if(state.stopAi)break;
           message(`AI artwork review ${i+1} of ${pairs.length}: ${pairs[i].name}`);
@@ -287,7 +313,7 @@ $('compare').onclick=async()=>{
         for(const result of results)result.aiError=state.aiConfigured===false?'AI reporting needs the server API key. Local comparison is complete. Add OPENAI_API_KEY in Netlify with Functions scope and redeploy, then generate a report here.':'AI reporting is unavailable right now. Local comparison is complete; try generating an AI report later.';
       }
     }
-  }finally{for(const result of state.results)result.aiPending=false;state.busy=false;state.aiRunning=false;update();renderPairing();if(state.results.length)renderResults();}
+  }finally{endProgress(state.results.length===state.proofs.length&&state.results.every(r=>!r.error&&(!$('ai-enabled').checked||r.ai?.coverage?.complete&&!r.aiError)));for(const result of state.results)result.aiPending=false;state.busy=false;state.aiRunning=false;update();renderPairing();if(state.results.length)renderResults();}
 };
 function renderResults(){
   const reviewed=state.results.filter(r=>r.ai);
