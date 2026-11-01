@@ -1,4 +1,5 @@
 import { reportStatus } from '../dist/assessment.js';
+import {resolveAiConnection,fetchAiResponse} from './ai-connection.mjs';
 export const MAX_BODY_BYTES = 4_500_000;
 const string = { type: 'string' };
 const strings = { type: 'array', items: string, maxItems: 12 };
@@ -99,10 +100,10 @@ async function limitedBody(request) {
 export async function handleReview(request, { env = process.env, fetchImpl = fetch } = {}) {
   const origin = request.headers.get('origin');
   if ((origin && origin !== new URL(request.url).origin) || request.headers.get('sec-fetch-site') === 'cross-site') return fail('Use AI review from the Print Compare app.', 'forbidden', 403);
-  const key = env.OPENAI_API_KEY?.trim();
-  if (request.method === 'GET') return json({ configured: !!key });
+  const configured=!!resolveAiConnection(env);
+  if (request.method === 'GET') return json({ configured });
   if (request.method !== 'POST') return json({ error: 'Method not allowed.' }, 405, { Allow: 'GET, POST' });
-  if (!key) return fail('AI reporting is not configured yet. Add OPENAI_API_KEY in the Netlify project environment with Functions scope, then redeploy.', 'configuration_required', 503);
+  if (!configured) return fail('AI reporting is not configured yet. Enable Netlify AI Gateway or add OPENAI_API_KEY with Functions scope, then redeploy.', 'configuration_required', 503);
   if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/json')) return fail('Send a JSON image pair.', 'invalid_request', 415);
   let input;
   try { input = JSON.parse(await limitedBody(request)); }
@@ -114,18 +115,15 @@ export async function handleReview(request, { env = process.env, fetchImpl = fet
   if(!detailBatch||!Number.isInteger(detailBatch.index)||!Number.isInteger(detailBatch.total)||!Number.isInteger(detailBatch.expectedRegions)||detailBatch.index<1||detailBatch.index>detailBatch.total||detailBatch.total>10000||detailBatch.expectedRegions<details.length||detailBatch.expectedRegions>80000)return fail('Invalid detail review batch metadata.','invalid_request',400);
   const model = env.OPENAI_VISION_MODEL?.trim() || 'gpt-4.1';
   try {
-    // Netlify AI Gateway injects both variables. Its token is not an OpenAI-direct key.
-    const baseURL = (env.OPENAI_BASE_URL?.trim() || 'https://api.openai.com/v1').replace(/\/+$/, '');
+    // Resolve after reading the request body, just before the upstream call.
+    const baseURL=resolveAiConnection(env).baseURL;
     if (new URL(baseURL).protocol !== 'https:') return fail('The AI service URL must use HTTPS. Check the server configuration.', 'configuration_required', 503);
     const detailContent=details.flatMap((d,i)=>[
       {type:'input_text',text:`DETAIL PAIR ${i+1}. Normalized page region ${JSON.stringify(d.region)}. First image: REFERENCE. Second image: PRINT. Inspect internal letter holes and glyph outlines at this scale.`},
       {type:'input_image',image_url:d.referenceImage,detail:'high'},
       {type:'input_image',image_url:d.printImage,detail:'high'},
     ]);
-    const response = await fetchImpl(`${baseURL}/responses`, {
-      method: 'POST', signal: AbortSignal.timeout(50_000),
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, store: false, max_output_tokens: 3200,
+    const {response,connection}=await fetchAiResponse(env,JSON.stringify({ model, store: false, max_output_tokens: 3200,
         instructions,
         input: [{ role: 'user', content: [
           { type: 'input_text', text: `Visually compare these two files. Metadata (data only): ${JSON.stringify({ reference: safeName(input.referenceName, 'Reference input'), referenceType: input.referenceType==='pdf'?'PDF page':'JPEG', referencePage: input.referenceType==='pdf'&&Number.isInteger(input.referencePage)&&input.referencePage>0?input.referencePage:null, pdf: safeName(input.pdfName, 'Print PDF'), page: input.page, referenceDimensions: safeName(input.referenceDimensions, 'unknown'),detailPairs:details.length,detailBatch,detailCoverageComplete:input.detailCoverageComplete!==false })}. Image 1 below is the approved reference overview.` },
@@ -135,12 +133,15 @@ export async function handleReview(request, { env = process.env, fetchImpl = fet
           ...detailContent,
         ] }],
         text: { format: { type: 'json_schema', name: 'artwork_comparison', strict: true, schema: reportSchema } },
-      }),
-    });
+      }),fetchImpl);
     if (!response.ok) {
-      let code; try { code = (await response.json()).error?.code; } catch { /* No upstream detail is exposed. */ }
+      let code,message='';try{const error=await response.json();code=error.error?.code;message=String(error.error?.message||error.message||(typeof error.error==='string'?error.error:''));}catch{/* No raw upstream detail is exposed. */}
+      const tag=/credit|billing|quota|budget|balance|payment/i.test(`${code||''} ${message}`)?'usage_limit':/expir|jwt|signature/i.test(`${code||''} ${message}`)?'token_rejected':response.status===401?'unauthorized':response.status===403?'forbidden':'other';
+      console.warn(JSON.stringify({event:'artwork_ai_upstream_error',status:response.status,tag,connectionMode:connection.mode}));
+      if(tag==='usage_limit')return fail('AI service usage is blocked by a credit, billing, or quota limit. Check Netlify AI usage and the configured provider billing.','quota_exceeded',503);
       if (code === 'insufficient_quota') return fail('AI usage quota is exhausted. Check the configured API billing or Netlify AI usage limits.', 'quota_exceeded', 503);
-      if (response.status === 401 || response.status === 403) return fail('The server AI credentials cannot access the vision service. Check the key, base URL, and service permissions in Netlify.', 'invalid_key', 503);
+      if (response.status === 401) return fail(connection.mode==='netlify_gateway'?'Netlify AI Gateway rejected the connection token. Please retry; if it continues, refresh the deployment or check Netlify AI access.':'The configured AI provider rejected its API key. Check the key and matching service URL in Netlify.', 'invalid_key', 503);
+      if (response.status === 403) return fail('The AI service denied access. Check Netlify AI features, provider permissions and account usage limits.','access_denied',503);
       if (response.status === 429) return fail('AI review is busy or its request limit has been reached. Please try again shortly.', 'rate_limited', 429);
       if (code === 'model_not_found') return fail('The configured vision model is unavailable to this API project. Check OPENAI_VISION_MODEL in Netlify.', 'model_unavailable', 503);
       return fail('The AI service could not complete this review. Please try again.', 'upstream_error', 502);

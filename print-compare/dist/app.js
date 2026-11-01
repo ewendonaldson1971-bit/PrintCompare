@@ -41,7 +41,7 @@ function update(){
 }
 async function checkAiConfiguration(){
   const status=$('ai-status');
-  try{const response=await fetch('/.netlify/functions/artwork-review',{cache:'no-store',signal:AbortSignal.timeout(10000)});if(!response.ok)throw new Error();const data=await response.json();if(typeof data.configured!=='boolean')throw new Error();state.aiConfigured=data.configured;status.textContent=data.configured?'AI reporting available':'AI setup needed: add the server API key';status.dataset.ready=String(data.configured);}
+  try{const response=await fetch('/.netlify/functions/artwork-review',{cache:'no-store',signal:AbortSignal.timeout(10000)});if(!response.ok)throw new Error();const data=await response.json();if(typeof data.configured!=='boolean')throw new Error();state.aiConfigured=data.configured;status.textContent=data.configured?'AI service configured':'AI setup needed: enable gateway or add a server key';status.dataset.ready=String(data.configured);}
   catch{state.aiConfigured=null;status.textContent='AI service is unavailable. Local checks still work.';status.dataset.ready='false';}
   return state.aiConfigured===true;
 }
