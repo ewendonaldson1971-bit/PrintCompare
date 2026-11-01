@@ -306,7 +306,7 @@ function renderViewer(){
   if(result.error){container.append(text('p','Preview unavailable for this pair.'));$('viewer-dimensions').textContent='';return;}
   $('viewer-dimensions').textContent=`${result.width} × ${result.height} px`;
   if(state.mode==='side'){
-    container.append(figure(`Print PDF · page ${result.page}`,result.print),figure(result.referenceType==='pdf'?`Reference PDF · page ${result.referencePage}`:'JPEG reference',result.reference));$('view-caption').textContent=result.referenceType==='pdf'?`Print PDF page ${result.page} / reference PDF page ${result.referencePage}`:'Print PDF / JPEG reference';
+    container.append(figure(result.referenceType==='pdf'?`Reference PDF · page ${result.referencePage}`:'JPEG reference',result.reference),figure(`Print PDF · page ${result.page}`,result.print));$('view-caption').textContent=result.referenceType==='pdf'?`Reference PDF page ${result.referencePage} / print PDF page ${result.page}`:'JPEG reference / Print PDF';
   }else if(state.mode==='overlay'){
     const c=canvas(result.width,result.height),ctx=c.getContext('2d');ctx.drawImage(result.print,0,0);ctx.globalAlpha=Number($('opacity').value)/100;ctx.drawImage(result.reference,-result.shiftX,-result.shiftY);container.append(figure('PDF + reference overlay',c));$('view-caption').textContent='Blend the reference over the PDF to inspect alignment.';
   }else{
